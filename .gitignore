@@ -1,0 +1,27 @@
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+
+# Local settings / secrets
+.env
+.env.*
+!.env.example
+token.pickle
+client_secret.json
+
+# Runtime data & build artifacts
+data/
+output/
+result/
+results/
+temp/
+temp_test/
+uploader/
+ffmpeg-8.0.1-essentials_build/
+*.zip
+*.mp4
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
