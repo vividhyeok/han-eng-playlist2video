@@ -12,7 +12,6 @@ from app.config.paths import CONFIG_FILE_PATH, ensure_data_dirs
 DEFAULT_CONFIG = {
     "translation_model": "gpt-4o-mini",
     "last_playlist_url": "",
-    "playlist_lyrics_policy": "allow_plain",
     "output_mode": "video",
 }
 

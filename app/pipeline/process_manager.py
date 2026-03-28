@@ -1,4 +1,4 @@
-"""Batch-safe process orchestration for lyric video generation."""
+"""리릭비디오 배치 처리 파이프라인."""
 
 from __future__ import annotations
 
@@ -78,31 +78,31 @@ class ProcessManager:
         os.makedirs(run_target_dir, exist_ok=True)
         os.makedirs(run_output_dir, exist_ok=True)
 
-        self.update_progress("Preparing audio...", 10)
+        self.update_progress("오디오 준비 중...", 10)
         resolved_audio_path = self._prepare_audio(config, audio_path)
 
-        self.update_progress("Preparing album art...", 30)
+        self.update_progress("앨범아트 준비 중...", 30)
         if not download_album_art(
             config.album_art_url,
             image_path,
             artist=config.artist,
             title=config.title,
         ):
-            raise RuntimeError("Failed to resolve album art.")
+            raise RuntimeError("앨범아트를 준비하지 못했습니다.")
 
-        self.update_progress("Preparing lyrics...", 50)
+        self.update_progress("가사 준비 중...", 50)
         lrc_path = self._resolve_lrc_path(config, filename)
         if not lrc_path:
-            raise RuntimeError("No lyric file could be resolved for this track.")
+            raise RuntimeError("이 곡에 사용할 가사 파일을 찾지 못했습니다.")
         shutil.copyfile(lrc_path, copied_lrc_path)
 
-        self.update_progress("Translating lyrics with OpenAI...", 70)
+        self.update_progress("OpenAI로 가사 번역 중...", 70)
         os.environ["CURRENT_ARTIST"] = config.artist
         os.environ["CURRENT_TITLE"] = config.title
         try:
             duration = get_audio_duration(resolved_audio_path)
             if duration <= 0:
-                raise RuntimeError("Downloaded audio file has no readable duration.")
+                raise RuntimeError("다운로드한 오디오 길이를 읽지 못했습니다.")
             await parse_lrc_and_translate(lrc_path, lyrics_json_path, duration=duration)
         finally:
             os.environ.pop("CURRENT_ARTIST", None)
@@ -111,7 +111,7 @@ class ProcessManager:
         self._ensure_required_files(resolved_audio_path, image_path, lyrics_json_path)
 
         if config.output_mode == "premiere_xml":
-            self.update_progress("Exporting Premiere XML...", 90)
+            self.update_progress("Premiere XML 내보내는 중...", 90)
             return export_premiere_xml(
                 audio_path=resolved_audio_path,
                 album_art_path=image_path,
@@ -119,7 +119,7 @@ class ProcessManager:
                 output_xml_path=premiere_xml_path,
             )
 
-        self.update_progress("Rendering video...", 90)
+        self.update_progress("영상 렌더링 중...", 90)
         make_lyric_video(
             audio_path=resolved_audio_path,
             album_art_path=image_path,
@@ -127,7 +127,7 @@ class ProcessManager:
             output_path=output_path,
         )
 
-        self.update_progress("Done.", 100)
+        self.update_progress("완료.", 100)
         return output_path
 
     def process(self, config: ProcessConfig) -> str:
@@ -140,13 +140,13 @@ class ProcessManager:
 
     def validate_config(self, config: ProcessConfig) -> Optional[str]:
         if not config.title.strip() or not config.artist.strip():
-            return "Title and artist are required."
+            return "제목과 아티스트 정보가 필요합니다."
         if not config.youtube_url.strip():
-            return "A YouTube URL is required."
+            return "YouTube URL을 입력해야 합니다."
         if config.output_mode not in ("video", "premiere_xml"):
-            return "Unsupported output mode."
+            return "지원하지 않는 출력 형식입니다."
         if not has_openai_api_key():
-            return "OPENAI_API_KEY is not configured."
+            return "OPENAI_API_KEY가 설정되어 있지 않습니다."
         return None
 
     def _prepare_audio(self, config: ProcessConfig, audio_path: str) -> str:
@@ -170,9 +170,7 @@ class ProcessManager:
                 shutil.move(youtube_result, audio_path)
             return audio_path
 
-        raise RuntimeError(
-            "Audio download failed with both spotDL and the YouTube fallback."
-        )
+        raise RuntimeError("spotDL과 YouTube 대체 경로 모두 오디오 다운로드에 실패했습니다.")
 
     def _resolve_lrc_path(self, config: ProcessConfig, filename: str) -> Optional[str]:
         if config.lrc_path and os.path.exists(config.lrc_path):
@@ -238,7 +236,7 @@ class ProcessManager:
     def _ensure_required_files(*paths: str) -> None:
         for path in paths:
             if not path or not os.path.exists(path):
-                raise FileNotFoundError(f"Required file is missing: {path}")
+                raise FileNotFoundError(f"필수 파일이 없습니다: {path}")
 
     @staticmethod
     def _sanitize_filename(filename: str) -> str:
