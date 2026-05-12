@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Callable, Iterable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -12,13 +12,15 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import yt_dlp
 
 from app.config.paths import LYRICS_DIR, ensure_data_dirs
-from app.lyrics.lyric_text_utils import normalize_lyric_text, prepare_lyric_text_for_subtitles
 from app.pipeline.process_manager import OutputMode, ProcessConfig
-from app.sources.genie_handler import get_best_lyrics, lyrics_are_synced, parse_genie_extra_info, search_genie_songs
+from app.sources.channel_index import ChannelVideoIndex, ChannelVideoRecord, find_duplicate_channel_video
+from app.sources.genie_handler import get_best_lyrics_result, lyrics_are_synced, parse_genie_extra_info, search_genie_songs
 from app.sources.youtube_handler import sanitize_youtube_url
 
 _NORMALIZE_PATTERN = re.compile(r"[^0-9a-z\uac00-\ud7a3]+", re.IGNORECASE)
 _ARTIST_SPLIT_PATTERN = re.compile(r"\s*(?:,|&|/| x | X | feat\.?|ft\.?|with|and)\s*", re.IGNORECASE)
+_HANGUL_PATTERN = re.compile(r"[\uac00-\ud7a3]")
+_LATIN_PATTERN = re.compile(r"[a-z]", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -58,8 +60,20 @@ class PlaylistReviewTrack:
     def label(self) -> str:
         return f"{self.artist or '아티스트 미상'} - {self.title or '제목 미상'}"
 
+    def has_synced_lyrics(self) -> bool:
+        return bool(
+            self.lyrics_mode == "synced"
+            and self.lrc_path
+            and os.path.exists(self.lrc_path)
+        )
+
     def can_render(self) -> bool:
-        return bool(self.title.strip() and self.artist.strip() and self.youtube_url.strip() and self.lrc_path and os.path.exists(self.lrc_path))
+        return bool(
+            self.title.strip()
+            and self.artist.strip()
+            and self.youtube_url.strip()
+            and self.has_synced_lyrics()
+        )
 
     def to_process_config(self, output_mode: OutputMode) -> ProcessConfig:
         return ProcessConfig(
@@ -74,25 +88,57 @@ class PlaylistReviewTrack:
 
 
 @dataclass(frozen=True)
+class PlaylistDuplicateSkip:
+    source_label: str
+    matched_video_title: str
+    matched_video_url: str
+
+
+@dataclass(frozen=True)
 class PlaylistImportReport:
     playlist_title: str
     playlist_url: str
+    source_track_count: int
     tracks: list[PlaylistReviewTrack]
+    duplicate_skips: list[PlaylistDuplicateSkip] = field(default_factory=list)
+
+    @property
+    def duplicate_skip_count(self) -> int:
+        return len(self.duplicate_skips)
 
 
 def import_playlist(
     playlist_url: str,
     *,
     output_mode: OutputMode = "video",
+    channel_index: Optional[ChannelVideoIndex] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
 ) -> PlaylistImportReport:
     normalized_url = normalize_youtube_playlist_url(playlist_url)
     playlist_title, source_tracks = extract_playlist_tracks(normalized_url)
-    review_tracks = []
+    review_tracks: list[PlaylistReviewTrack] = []
+    duplicate_skips: list[PlaylistDuplicateSkip] = []
     for index, source_track in enumerate(source_tracks, start=1):
+        duplicate = _match_channel_duplicate(channel_index, artist=source_track.artist, title=source_track.title)
+        if duplicate is not None:
+            _emit(progress_callback, f"[{index}/{len(source_tracks)}] 채널 중복 제외: {source_track.label} -> {duplicate.title}")
+            duplicate_skips.append(_build_duplicate_skip(source_track.label, duplicate))
+            continue
         _emit(progress_callback, f"[{index}/{len(source_tracks)}] {source_track.label} 확인 중...")
-        review_tracks.append(_resolve_review_track(source_track, output_mode=output_mode))
-    return PlaylistImportReport(playlist_title=playlist_title, playlist_url=normalized_url, tracks=review_tracks)
+        review_track = _resolve_review_track(source_track, output_mode=output_mode)
+        duplicate = _match_channel_duplicate(channel_index, artist=review_track.artist, title=review_track.title)
+        if duplicate is not None:
+            _emit(progress_callback, f"[{index}/{len(source_tracks)}] 채널 중복 제외: {review_track.label} -> {duplicate.title}")
+            duplicate_skips.append(_build_duplicate_skip(review_track.label, duplicate))
+            continue
+        review_tracks.append(review_track)
+    return PlaylistImportReport(
+        playlist_title=playlist_title,
+        playlist_url=normalized_url,
+        source_track_count=len(source_tracks),
+        tracks=review_tracks,
+        duplicate_skips=duplicate_skips,
+    )
 
 
 def extract_playlist_tracks(playlist_url: str) -> tuple[str, list[PlaylistSourceTrack]]:
@@ -154,25 +200,25 @@ def normalize_youtube_playlist_url(url: str) -> str:
     return f"https://www.youtube.com/playlist?{urlencode({'list': playlist_id})}"
 
 
-def save_review_track_lyrics(*, artist: str, title: str, lyrics_text: str) -> tuple[str, str]:
+def save_review_track_lyrics(
+    *,
+    artist: str,
+    title: str,
+    lyrics_text: str,
+    existing_path: Optional[str] = None,
+) -> tuple[str, str]:
     ensure_data_dirs()
     os.makedirs(LYRICS_DIR, exist_ok=True)
-    prepared_text = lyrics_text.strip()
-    if not lyrics_are_synced(prepared_text):
-        prepared_text = prepare_lyric_text_for_subtitles(normalize_lyric_text(prepared_text))
-    prepared_text = prepared_text.strip()
-    filename = _sanitize_filename(f"{artist or 'Unknown'} - {title or 'Unknown'}")
-    path = _build_available_lyrics_path(filename, prepared_text)
+    prepared_text = _preserve_lyric_text(lyrics_text)
+    if existing_path:
+        path = existing_path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    else:
+        filename = _sanitize_filename(f"{artist or 'Unknown'} - {title or 'Unknown'}")
+        path = _build_available_lyrics_path(filename, prepared_text)
     with open(path, "w", encoding="utf-8") as lyric_file:
         lyric_file.write(prepared_text + "\n")
     return path, prepared_text
-
-
-def load_review_track_lyrics_file(path: str) -> tuple[str, str]:
-    lyrics_text = _read_lyrics_text_file(path).strip()
-    if not lyrics_text:
-        return "", "missing"
-    return lyrics_text, "synced" if lyrics_are_synced(lyrics_text) else "plain"
 
 
 def _resolve_review_track(source_track: PlaylistSourceTrack, *, output_mode: OutputMode) -> PlaylistReviewTrack:
@@ -196,14 +242,28 @@ def _resolve_review_track(source_track: PlaylistSourceTrack, *, output_mode: Out
             track.album = album or track.album
             track.album_art_url = art_url or track.album_art_url
             track.duration = duration or track.duration
-            lyrics_text = get_best_lyrics(song_id=song_id, title=track.title, artist=track.artist, album=track.album, duration=track.duration)
+            lyrics_result = get_best_lyrics_result(
+                song_id=song_id,
+                title=track.title,
+                artist=track.artist,
+                album=track.album,
+                duration=track.duration,
+                youtube_url=track.youtube_url,
+            )
         else:
-            lyrics_text = get_best_lyrics(title=track.title, artist=track.artist, album=track.album, duration=track.duration)
+            lyrics_result = get_best_lyrics_result(
+                title=track.title,
+                artist=track.artist,
+                album=track.album,
+                duration=track.duration,
+                youtube_url=track.youtube_url,
+            )
     except Exception as exc:
         track.status = "error"
         track.note = f"자동 확인 실패: {exc}"
         return track
 
+    lyrics_text = lyrics_result.text if lyrics_result else None
     if not lyrics_text:
         track.status = "missing_lyrics"
         track.note = "가사를 찾지 못했습니다. 직접 입력하거나 수정해 주세요."
@@ -212,9 +272,15 @@ def _resolve_review_track(source_track: PlaylistSourceTrack, *, output_mode: Out
     track.lrc_path, track.lyrics_text = save_review_track_lyrics(artist=track.artist, title=track.title, lyrics_text=lyrics_text)
     track.lyrics_mode = "synced" if lyrics_are_synced(track.lyrics_text) else "plain"
     track.lyrics_source = "generated"
-    track.status = "ready"
-    track.include_in_batch = True
-    track.note = "싱크 가사를 찾았습니다." if track.lyrics_mode == "synced" else "일반 가사를 찾았습니다."
+    source_label = lyrics_result.source if lyrics_result else "자동 검색"
+    if track.lyrics_mode == "synced":
+        track.status = "ready"
+        track.include_in_batch = True
+        track.note = f"{source_label}에서 싱크 가사를 찾았습니다."
+    else:
+        track.status = "plain_lyrics"
+        track.include_in_batch = False
+        track.note = f"{source_label}에서 일반 가사만 찾았습니다. 싱크 작업 전에는 렌더하지 않습니다."
     return track
 
 
@@ -233,39 +299,72 @@ def _find_best_genie_result(source_track: PlaylistSourceTrack) -> Optional[tuple
     scored = [(_score_genie_candidate(source_track, candidate), candidate) for candidate in candidates]
     scored.sort(key=lambda item: item[0], reverse=True)
     best_score, best_candidate = scored[0]
-    return best_candidate if best_score >= 55 else None
+    return best_candidate if best_score >= _minimum_genie_match_score(source_track) else None
 
 
 def _build_search_queries(source_track: PlaylistSourceTrack) -> Iterable[str]:
-    if source_track.artist and source_track.title:
-        yield f"{source_track.artist} {source_track.title}"
-    if source_track.title:
-        yield source_track.title
+    queries: list[str] = []
     if source_track.artist and source_track.album and source_track.title:
-        yield f"{source_track.artist} {source_track.album} {source_track.title}"
+        queries.append(f"{source_track.artist} {source_track.album} {source_track.title}")
+    if source_track.artist and source_track.title:
+        queries.append(f"{source_track.artist} {source_track.title}")
+    if not source_track.artist and source_track.album and source_track.title:
+        queries.append(f"{source_track.album} {source_track.title}")
+    if not source_track.artist and source_track.title:
+        queries.append(source_track.title)
+
+    seen_queries: set[str] = set()
+    for query in queries:
+        normalized_query = _normalize_text(query)
+        if not normalized_query or normalized_query in seen_queries:
+            continue
+        seen_queries.add(normalized_query)
+        yield query
 
 
 def _score_genie_candidate(source_track: PlaylistSourceTrack, candidate: tuple[str, str, str, str, Optional[int]]) -> int:
     candidate_title, _, extra_info, _, candidate_duration = candidate
-    candidate_artist, _ = parse_genie_extra_info(extra_info)
+    candidate_artist, candidate_album = parse_genie_extra_info(extra_info)
     source_title = _normalize_text(source_track.title)
     source_artist = _normalize_text(_primary_artist(source_track.artist))
+    source_album = _normalize_text(source_track.album)
     result_title = _normalize_text(candidate_title)
     result_artist = _normalize_text(_primary_artist(candidate_artist))
-    score = int(SequenceMatcher(None, source_title, result_title).ratio() * 70)
-    if source_title == result_title:
-        score += 25
+    result_album = _normalize_text(candidate_album)
+
+    title_similarity = _similarity_score(source_title, result_title)
+    artist_similarity = _similarity_score(source_artist, result_artist)
+    album_similarity = _similarity_score(source_album, result_album)
+
+    score = int(title_similarity * 55)
+    if title_similarity >= 0.98:
+        score += 15
+
     if source_artist and result_artist:
-        score += int(SequenceMatcher(None, source_artist, result_artist).ratio() * 25)
+        score += int(artist_similarity * 30)
+        if _normalized_texts_overlap(source_artist, result_artist):
+            score += 20
+        elif artist_similarity < 0.35 and _shares_comparable_script(source_track.artist, candidate_artist):
+            score -= 35
+
+    if source_album and result_album:
+        score += int(album_similarity * 12)
+        if _normalized_texts_overlap(source_album, result_album):
+            score += 8
+
     if source_track.duration and candidate_duration:
         delta = abs(int(source_track.duration) - int(candidate_duration))
         if delta <= 2:
-            score += 20
+            score += 15
         elif delta <= 5:
-            score += 12
+            score += 10
         elif delta <= 10:
-            score += 6
+            score += 4
     return score
+
+
+def _minimum_genie_match_score(source_track: PlaylistSourceTrack) -> int:
+    return 78 if _normalize_text(_primary_artist(source_track.artist)) else 55
 
 
 def _build_available_lyrics_path(filename: str, prepared_text: str) -> str:
@@ -286,19 +385,21 @@ def _build_available_lyrics_path(filename: str, prepared_text: str) -> str:
         counter += 1
 
 
-def _read_lyrics_text_file(path: str) -> str:
-    encodings = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
-    last_error: Optional[Exception] = None
-    for encoding in encodings:
-        try:
-            with open(path, "r", encoding=encoding) as lyric_file:
-                return lyric_file.read().replace("\r\n", "\n").replace("\r", "\n")
-        except UnicodeDecodeError as exc:
-            last_error = exc
-    if last_error is not None:
-        raise ValueError(f"가사 파일 인코딩을 읽지 못했습니다: {path}") from last_error
-    with open(path, "r", encoding="utf-8") as lyric_file:
-        return lyric_file.read().replace("\r\n", "\n").replace("\r", "\n")
+def _match_channel_duplicate(
+    channel_index: Optional[ChannelVideoIndex],
+    *,
+    artist: str,
+    title: str,
+) -> Optional[ChannelVideoRecord]:
+    return find_duplicate_channel_video(channel_index, artist=artist, title=title)
+
+
+def _build_duplicate_skip(source_label: str, duplicate: ChannelVideoRecord) -> PlaylistDuplicateSkip:
+    return PlaylistDuplicateSkip(
+        source_label=source_label,
+        matched_video_title=duplicate.title,
+        matched_video_url=duplicate.video_url,
+    )
 
 
 def _emit(progress_callback: Optional[Callable[[str], None]], message: str) -> None:
@@ -323,8 +424,40 @@ def _normalize_text(value: str) -> str:
     return _NORMALIZE_PATTERN.sub("", (value or "").strip().lower())
 
 
+def _similarity_score(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _normalized_texts_overlap(left: str, right: str) -> bool:
+    return bool(left and right and (left in right or right in left))
+
+
+def _shares_comparable_script(left: str, right: str) -> bool:
+    left = left or ""
+    right = right or ""
+    if not left.strip() or not right.strip():
+        return False
+    shares_hangul = bool(_HANGUL_PATTERN.search(left) and _HANGUL_PATTERN.search(right))
+    shares_latin = bool(_LATIN_PATTERN.search(left) and _LATIN_PATTERN.search(right))
+    return shares_hangul or shares_latin
+
+
 def _sanitize_filename(filename: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "_", filename)
+
+
+def _preserve_lyric_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").replace("\ufeff", "")
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _coerce_int(value: object) -> Optional[int]:

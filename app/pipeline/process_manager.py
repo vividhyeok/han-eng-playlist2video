@@ -22,7 +22,7 @@ from app.lyrics.ai_models import has_openai_api_key
 from app.lyrics.openai_handler import parse_lrc_and_translate
 from app.media.video_maker import get_audio_duration, make_lyric_video
 from app.sources.album_art_finder import download_album_art
-from app.sources.genie_handler import get_best_lyrics
+from app.sources.genie_handler import get_best_lyrics_result, lyrics_are_synced
 from app.sources.spotdl_handler import download_audio_simple
 from app.sources.youtube_handler import download_youtube_audio, validate_audio_file
 
@@ -143,6 +143,10 @@ class ProcessManager:
             return "제목과 아티스트 정보가 필요합니다."
         if not config.youtube_url.strip():
             return "YouTube URL을 입력해야 합니다."
+        if not config.lrc_path or not os.path.exists(config.lrc_path):
+            return "렌더할 싱크 가사 파일이 필요합니다."
+        if not self._is_synced_lrc_file(config.lrc_path):
+            return "싱크되지 않은 일반 가사는 렌더할 수 없습니다. 먼저 싱크 작업을 해 주세요."
         if config.output_mode not in ("video", "premiere_xml"):
             return "지원하지 않는 출력 형식입니다."
         if not has_openai_api_key():
@@ -174,7 +178,7 @@ class ProcessManager:
 
     def _resolve_lrc_path(self, config: ProcessConfig, filename: str) -> Optional[str]:
         if config.lrc_path and os.path.exists(config.lrc_path):
-            return config.lrc_path
+            return config.lrc_path if self._is_synced_lrc_file(config.lrc_path) else None
 
         search_dirs = [LYRICS_DIR]
         if os.path.isdir(LEGACY_LYRICS_DIR):
@@ -188,7 +192,7 @@ class ProcessManager:
         for lyrics_dir in search_dirs:
             for preferred_name in preferred_names:
                 candidate = os.path.join(lyrics_dir, preferred_name)
-                if os.path.exists(candidate):
+                if os.path.exists(candidate) and self._is_synced_lrc_file(candidate):
                     return candidate
 
         normalized_artist = self._normalize_search_token(config.artist)
@@ -201,6 +205,9 @@ class ProcessManager:
             for entry in os.listdir(lyrics_dir):
                 if not entry.lower().endswith((".lrc", ".txt")):
                     continue
+                candidate_path = os.path.join(lyrics_dir, entry)
+                if not self._is_synced_lrc_file(candidate_path):
+                    continue
                 normalized_name = self._normalize_search_token(entry)
                 score = 0
                 if normalized_artist and normalized_artist in normalized_name:
@@ -208,7 +215,7 @@ class ProcessManager:
                 if normalized_title and normalized_title in normalized_name:
                     score += 1
                 if score:
-                    matching_candidates.append((score, os.path.join(lyrics_dir, entry)))
+                    matching_candidates.append((score, candidate_path))
 
         if matching_candidates:
             matching_candidates.sort(
@@ -220,17 +227,27 @@ class ProcessManager:
             )
             return matching_candidates[0][1]
 
-        fetched_lyrics = get_best_lyrics(
+        fetched_lyrics_result = get_best_lyrics_result(
             title=config.title,
             artist=config.artist,
+            youtube_url=config.youtube_url,
+            allow_fuzzy_match=False,
         )
-        if fetched_lyrics:
+        if fetched_lyrics_result and fetched_lyrics_result.lyrics_mode == "synced":
             target_path = os.path.join(LYRICS_DIR, f"{filename}.lrc")
             with open(target_path, "w", encoding="utf-8") as lyric_file:
-                lyric_file.write(fetched_lyrics.strip() + "\n")
+                lyric_file.write(fetched_lyrics_result.text.strip() + "\n")
             return target_path
 
         return None
+
+    @staticmethod
+    def _is_synced_lrc_file(path: str) -> bool:
+        try:
+            with open(path, "r", encoding="utf-8") as lyric_file:
+                return lyrics_are_synced(lyric_file.read())
+        except OSError:
+            return False
 
     @staticmethod
     def _ensure_required_files(*paths: str) -> None:

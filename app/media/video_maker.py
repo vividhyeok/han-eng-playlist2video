@@ -179,12 +179,21 @@ def _draw_multiline_centered(
         y_cursor += height + spacing
 
 
-def prepare_base_frame(background_img: Image.Image) -> Image.Image:
-    frame = background_img.convert("RGBA")
+def _center_crop_square(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    side = min(width, height)
+    left = (width - side) // 2
+    top = (height - side) // 2
+    return image.crop((left, top, left + side, top + side))
+
+
+def prepare_base_frame(album_art_img: Image.Image) -> Image.Image:
+    cover = _center_crop_square(album_art_img.convert("RGB"))
+    frame = cover.resize((1920, 1080), Image.Resampling.LANCZOS).convert("RGBA")
     blurred = frame.filter(ImageFilter.GaussianBlur(radius=30))
     base = Image.alpha_composite(blurred, Image.new("RGBA", frame.size, (0, 0, 0, 160)))
     art_size = (500, 500)
-    art_img = background_img.resize(art_size, Image.Resampling.LANCZOS).convert("RGBA")
+    art_img = cover.resize(art_size, Image.Resampling.LANCZOS).convert("RGBA")
     art_x = (frame.width - art_size[0]) // 2
     art_y = 180
     base.paste(art_img, (art_x, art_y), art_img)
@@ -247,8 +256,7 @@ def make_lyric_video(audio_path: str, album_art_path: str, lyrics_json_path: str
             raise ValueError("Failed to determine audio duration.")
 
         with Image.open(album_art_path) as album_image:
-            background = album_image.convert("RGB").resize((1920, 1080), Image.Resampling.LANCZOS)
-        base_frame = prepare_base_frame(background)
+            base_frame = prepare_base_frame(album_image)
         fonts = prepare_fonts()
 
         with open(lyrics_json_path, "r", encoding="utf-8") as json_file:

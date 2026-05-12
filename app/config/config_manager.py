@@ -12,6 +12,8 @@ from app.config.paths import CONFIG_FILE_PATH, ensure_data_dirs
 DEFAULT_CONFIG = {
     "translation_model": "gpt-4o-mini",
     "last_playlist_url": "",
+    "last_channel_url": "",
+    "enable_ai_duplicate_match": True,
     "output_mode": "video",
 }
 

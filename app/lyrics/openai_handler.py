@@ -542,8 +542,7 @@ def _parse_lrc_content(content: str, duration: float = 0.0) -> List[Dict[str, An
     if not plain_lines:
         return []
 
-    prepared_plain_text = prepare_lyric_text_for_subtitles("\n".join(plain_lines))
-    plain_lines = [line for line in prepared_plain_text.splitlines() if line.strip()]
+    plain_lines = [line for line in plain_lines if line.strip()]
 
     start_offset = 5.0 if duration > 20 else 0.0
     usable_duration = max(duration - start_offset, float(len(plain_lines)))

@@ -118,7 +118,9 @@ def download_album_art(
         if os.path.isfile(candidate):
             try:
                 shutil.copyfile(candidate, filepath)
-                return _validate_image(filepath)
+                if _prepare_album_art_image(filepath):
+                    return True
+                _remove_invalid_image(filepath)
             except Exception as exc:
                 print(f"[WARN] Failed to copy local album art {candidate}: {exc}")
                 continue
@@ -129,22 +131,30 @@ def download_album_art(
     return False
 
 
-def _download_url_to_file(url: str, filepath: str) -> bool:
+def _download_url_to_file(
+    url: str,
+    filepath: str,
+) -> bool:
     for attempt in range(3):
         try:
             response = requests.get(url, headers=REQUEST_HEADERS, timeout=15)
             response.raise_for_status()
             with open(filepath, "wb") as image_file:
                 image_file.write(response.content)
-            if _validate_image(filepath):
+            if _prepare_album_art_image(filepath):
                 return True
+            print(f"[WARN] Album art candidate could not be normalized: {url}")
+            _remove_invalid_image(filepath)
         except Exception as exc:
             print(f"[WARN] Album art download attempt {attempt + 1} failed: {exc}")
+            _remove_invalid_image(filepath)
 
     return False
 
 
-def _validate_image(filepath: str) -> bool:
+def _validate_image(
+    filepath: str,
+) -> bool:
     try:
         if os.path.getsize(filepath) < 1024:
             return False
@@ -153,3 +163,32 @@ def _validate_image(filepath: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _prepare_album_art_image(filepath: str) -> bool:
+    if not _validate_image(filepath):
+        return False
+
+    try:
+        with Image.open(filepath) as image:
+            normalized = _center_crop_square(image.convert("RGB"))
+            normalized.save(filepath, format="JPEG", quality=95)
+        return _validate_image(filepath)
+    except Exception:
+        return False
+
+
+def _center_crop_square(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    side = min(width, height)
+    left = (width - side) // 2
+    top = (height - side) // 2
+    return image.crop((left, top, left + side, top + side))
+
+
+def _remove_invalid_image(filepath: str) -> None:
+    try:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+    except OSError:
+        pass

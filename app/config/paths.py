@@ -15,6 +15,7 @@ CACHE_DIR = os.path.join(DATA_DIR, "cache")
 CONFIG_DIR = os.path.join(DATA_DIR, "config")
 
 TRANSLATION_CACHE_PATH = os.path.join(CACHE_DIR, "translation_cache.json")
+CHANNEL_VIDEO_CACHE_PATH = os.path.join(CACHE_DIR, "channel_video_index.json")
 CONFIG_FILE_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 # FFMPEG paths

@@ -49,6 +49,61 @@ QLineEdit:hover {
     background: rgba(255, 255, 255, 0.12);
 }
 
+QTextEdit, QListWidget {
+    background: rgba(255, 255, 255, 0.08);
+    border: 2px solid rgba(255, 255, 255, 0.16);
+    border-radius: 10px;
+    padding: 10px 12px;
+    color: #ffffff;
+    font-size: 13px;
+    selection-background-color: #0f3460;
+}
+
+QTextEdit:focus, QListWidget:focus {
+    border: 2px solid #00d4ff;
+    background: rgba(255, 255, 255, 0.12);
+}
+
+QListWidget::item {
+    padding: 8px 6px;
+    border-radius: 8px;
+}
+
+QListWidget::item:selected {
+    background: rgba(0, 212, 255, 0.2);
+}
+
+QTabWidget::pane {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 12px;
+    margin-top: 8px;
+}
+
+QTabBar::tab {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 10px 18px;
+    margin-right: 6px;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    color: rgba(255, 255, 255, 0.78);
+}
+
+QTabBar::tab:selected {
+    background: rgba(0, 212, 255, 0.18);
+    color: #ffffff;
+}
+
+QSplitter::handle {
+    background: rgba(255, 255, 255, 0.1);
+    width: 8px;
+    height: 8px;
+    margin: 4px;
+    border-radius: 4px;
+}
+
 /* Buttons */
 QPushButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
