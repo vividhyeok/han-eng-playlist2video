@@ -1,0 +1,77 @@
+name: Windows build
+
+on:
+  push:
+    branches:
+      - main
+      - feat/local-web-batch-workbench
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compile Python sources
+        run: python -m compileall -q app main.py legacy_gui.py
+
+      - name: Import web application
+        shell: pwsh
+        run: |
+          python -c "import app.web.server; import app.lyrics.translator_v2; import app.lyrics.auto_sync; import app.lyrics.exception_policy; print('imports ok')"
+
+      - name: Build standalone EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --name LyricVideoMaker `
+            --add-data "app/web/static;app/web/static" `
+            --add-binary "bin/ffmpeg/bin/ffmpeg.exe;bin/ffmpeg/bin" `
+            --add-binary "bin/ffmpeg/bin/ffprobe.exe;bin/ffmpeg/bin" `
+            --collect-all genieapi `
+            --collect-all yt_dlp `
+            main.py
+
+      - name: Verify EXE exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/LyricVideoMaker.exe")) { throw "EXE was not created" }
+          Get-Item "dist/LyricVideoMaker.exe" | Format-List Name,Length,LastWriteTime
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LyricVideoMaker-Windows
+          path: dist/LyricVideoMaker.exe
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "dist/LyricVideoMaker.exe" --title "Lyric Video Maker ${{ github.ref_name }}" --generate-notes
