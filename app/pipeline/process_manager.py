@@ -1,5 +1,4 @@
-"""Batch-safe process orchestration for lyric video generation."""
-
+"""Batch-safe orchestration for lyric video generation."""
 from __future__ import annotations
 
 import asyncio
@@ -10,16 +9,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Literal, Optional
 
-from app.config.paths import (
-    LEGACY_LYRICS_DIR,
-    LYRICS_DIR,
-    OUTPUT_DIR,
-    TEMP_DIR,
-    ensure_data_dirs,
-)
+from app.config.paths import LEGACY_LYRICS_DIR, LYRICS_DIR, OUTPUT_DIR, TEMP_DIR, ensure_data_dirs
 from app.export.premiere_exporter import export_premiere_xml
 from app.lyrics.ai_models import has_openai_api_key
-from app.lyrics.openai_handler import parse_lrc_and_translate
+from app.lyrics.translator_v2 import parse_lrc_and_translate
 from app.media.video_maker import get_audio_duration, make_lyric_video
 from app.sources.album_art_finder import download_album_art
 from app.sources.genie_handler import get_best_lyrics
@@ -49,7 +42,6 @@ class ProcessManager:
 
     async def process_async(self, config: ProcessConfig) -> str:
         ensure_data_dirs()
-
         base_filename = self._sanitize_filename(f"{config.artist} - {config.title}")
         if config.batch_name:
             run_folder_name = config.batch_name
@@ -57,17 +49,15 @@ class ProcessManager:
             run_output_dir = os.path.join(config.output_dir, run_folder_name)
             os.makedirs(run_target_dir, exist_ok=True)
             os.makedirs(run_output_dir, exist_ok=True)
-            filename = self._build_available_filename(
-                base_filename,
-                run_target_dir,
-                run_output_dir,
-            )
+            filename = self._build_available_filename(base_filename, run_target_dir, run_output_dir)
         else:
             filename = base_filename
             run_folder_name = self._build_run_folder_name(filename)
             run_target_dir = os.path.join(config.target_dir, run_folder_name)
             run_output_dir = os.path.join(config.output_dir, run_folder_name)
 
+        os.makedirs(run_target_dir, exist_ok=True)
+        os.makedirs(run_output_dir, exist_ok=True)
         audio_path = os.path.join(run_target_dir, f"{filename}.mp3")
         image_path = os.path.join(run_target_dir, f"{filename}.jpg")
         lyrics_json_path = os.path.join(run_output_dir, f"{filename}_lyrics.json")
@@ -75,104 +65,77 @@ class ProcessManager:
         premiere_xml_path = os.path.join(run_output_dir, f"{filename}.xml")
         copied_lrc_path = os.path.join(run_output_dir, f"{filename}.lrc")
 
-        os.makedirs(run_target_dir, exist_ok=True)
-        os.makedirs(run_output_dir, exist_ok=True)
+        self.update_progress("음원 준비", 10)
+        resolved_audio = self._prepare_audio(config, audio_path)
 
-        self.update_progress("Preparing audio...", 10)
-        resolved_audio_path = self._prepare_audio(config, audio_path)
+        self.update_progress("앨범아트 준비", 28)
+        if not download_album_art(config.album_art_url, image_path, artist=config.artist, title=config.title):
+            raise RuntimeError("앨범아트를 가져오지 못했습니다.")
 
-        self.update_progress("Preparing album art...", 30)
-        if not download_album_art(
-            config.album_art_url,
-            image_path,
-            artist=config.artist,
-            title=config.title,
-        ):
-            raise RuntimeError("Failed to resolve album art.")
-
-        self.update_progress("Preparing lyrics...", 50)
+        self.update_progress("가사 준비", 44)
         lrc_path = self._resolve_lrc_path(config, filename)
         if not lrc_path:
-            raise RuntimeError("No lyric file could be resolved for this track.")
+            raise RuntimeError("사용 가능한 가사를 찾지 못했습니다.")
         shutil.copyfile(lrc_path, copied_lrc_path)
 
-        self.update_progress("Translating lyrics with OpenAI...", 70)
-        os.environ["CURRENT_ARTIST"] = config.artist
-        os.environ["CURRENT_TITLE"] = config.title
-        try:
-            duration = get_audio_duration(resolved_audio_path)
-            if duration <= 0:
-                raise RuntimeError("Downloaded audio file has no readable duration.")
-            await parse_lrc_and_translate(lrc_path, lyrics_json_path, duration=duration)
-        finally:
-            os.environ.pop("CURRENT_ARTIST", None)
-            os.environ.pop("CURRENT_TITLE", None)
-
-        self._ensure_required_files(resolved_audio_path, image_path, lyrics_json_path)
+        self.update_progress("전체 문맥 번역", 62)
+        duration = get_audio_duration(resolved_audio)
+        if duration <= 0:
+            raise RuntimeError("음원 길이를 읽지 못했습니다.")
+        await parse_lrc_and_translate(
+            lrc_path,
+            lyrics_json_path,
+            duration=duration,
+            artist=config.artist,
+            title=config.title,
+        )
+        self._ensure_required_files(resolved_audio, image_path, lyrics_json_path)
 
         if config.output_mode == "premiere_xml":
-            self.update_progress("Exporting Premiere XML...", 90)
-            return export_premiere_xml(
-                audio_path=resolved_audio_path,
+            self.update_progress("Premiere XML 생성", 88)
+            result = export_premiere_xml(
+                audio_path=resolved_audio,
                 album_art_path=image_path,
                 lyrics_json_path=lyrics_json_path,
                 output_xml_path=premiere_xml_path,
             )
+        else:
+            self.update_progress("빠른 영상 렌더링", 84)
+            make_lyric_video(resolved_audio, image_path, lyrics_json_path, output_path)
+            result = output_path
 
-        self.update_progress("Rendering video...", 90)
-        make_lyric_video(
-            audio_path=resolved_audio_path,
-            album_art_path=image_path,
-            lyrics_json_path=lyrics_json_path,
-            output_path=output_path,
-        )
-
-        self.update_progress("Done.", 100)
-        return output_path
+        self.update_progress("완료", 100)
+        return result
 
     def process(self, config: ProcessConfig) -> str:
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self.process_async(config))
-        finally:
-            loop.close()
+        return asyncio.run(self.process_async(config))
 
     def validate_config(self, config: ProcessConfig) -> Optional[str]:
         if not config.title.strip() or not config.artist.strip():
-            return "Title and artist are required."
+            return "제목과 아티스트가 필요합니다."
         if not config.youtube_url.strip():
-            return "A YouTube URL is required."
+            return "YouTube 음원 URL이 필요합니다."
         if config.output_mode not in ("video", "premiere_xml"):
-            return "Unsupported output mode."
+            return "지원하지 않는 출력 형식입니다."
         if not has_openai_api_key():
-            return "OPENAI_API_KEY is not configured."
+            return "OpenAI API 키가 설정되지 않았습니다."
         return None
 
     def _prepare_audio(self, config: ProcessConfig, audio_path: str) -> str:
         if validate_audio_file(audio_path):
             return audio_path
-
         if not config.prefer_youtube:
-            spotdl_result = download_audio_simple(
-                config.artist,
-                config.title,
-                os.path.dirname(audio_path),
-            )
+            spotdl_result = download_audio_simple(config.artist, config.title, os.path.dirname(audio_path))
             if spotdl_result and validate_audio_file(spotdl_result):
                 if os.path.abspath(spotdl_result) != os.path.abspath(audio_path):
                     shutil.move(spotdl_result, audio_path)
                 return audio_path
-
         youtube_result = download_youtube_audio(config.youtube_url, audio_path)
         if youtube_result and validate_audio_file(youtube_result):
             if os.path.abspath(youtube_result) != os.path.abspath(audio_path):
                 shutil.move(youtube_result, audio_path)
             return audio_path
-
-        raise RuntimeError(
-            "Audio download failed with both spotDL and the YouTube fallback."
-        )
+        raise RuntimeError("음원 다운로드에 실패했습니다.")
 
     def _resolve_lrc_path(self, config: ProcessConfig, filename: str) -> Optional[str]:
         if config.lrc_path and os.path.exists(config.lrc_path):
@@ -181,57 +144,36 @@ class ProcessManager:
         search_dirs = [LYRICS_DIR]
         if os.path.isdir(LEGACY_LYRICS_DIR):
             search_dirs.append(LEGACY_LYRICS_DIR)
-
-        preferred_names = {
-            f"{filename}.lrc",
-            f"{filename}.txt",
-        }
-
-        for lyrics_dir in search_dirs:
-            for preferred_name in preferred_names:
-                candidate = os.path.join(lyrics_dir, preferred_name)
+        preferred = {f"{filename}.lrc", f"{filename}.txt"}
+        for directory in search_dirs:
+            for name in preferred:
+                candidate = os.path.join(directory, name)
                 if os.path.exists(candidate):
                     return candidate
 
-        normalized_artist = self._normalize_search_token(config.artist)
-        normalized_title = self._normalize_search_token(config.title)
-        matching_candidates = []
-
-        for lyrics_dir in search_dirs:
-            if not os.path.isdir(lyrics_dir):
+        artist_token = self._normalize_search_token(config.artist)
+        title_token = self._normalize_search_token(config.title)
+        matches = []
+        for directory in search_dirs:
+            if not os.path.isdir(directory):
                 continue
-            for entry in os.listdir(lyrics_dir):
+            for entry in os.listdir(directory):
                 if not entry.lower().endswith((".lrc", ".txt")):
                     continue
-                normalized_name = self._normalize_search_token(entry)
-                score = 0
-                if normalized_artist and normalized_artist in normalized_name:
-                    score += 1
-                if normalized_title and normalized_title in normalized_name:
-                    score += 1
+                normalized = self._normalize_search_token(entry)
+                score = int(bool(artist_token and artist_token in normalized)) + int(bool(title_token and title_token in normalized))
                 if score:
-                    matching_candidates.append((score, os.path.join(lyrics_dir, entry)))
+                    matches.append((score, os.path.getmtime(os.path.join(directory, entry)), os.path.join(directory, entry)))
+        if matches:
+            matches.sort(reverse=True)
+            return matches[0][2]
 
-        if matching_candidates:
-            matching_candidates.sort(
-                key=lambda item: (
-                    item[0],
-                    os.path.getmtime(item[1]),
-                ),
-                reverse=True,
-            )
-            return matching_candidates[0][1]
-
-        fetched_lyrics = get_best_lyrics(
-            title=config.title,
-            artist=config.artist,
-        )
-        if fetched_lyrics:
-            target_path = os.path.join(LYRICS_DIR, f"{filename}.lrc")
-            with open(target_path, "w", encoding="utf-8") as lyric_file:
-                lyric_file.write(fetched_lyrics.strip() + "\n")
-            return target_path
-
+        fetched = get_best_lyrics(title=config.title, artist=config.artist)
+        if fetched:
+            target = os.path.join(LYRICS_DIR, f"{filename}.lrc")
+            with open(target, "w", encoding="utf-8") as file:
+                file.write(fetched.strip() + "\n")
+            return target
         return None
 
     @staticmethod
@@ -246,23 +188,16 @@ class ProcessManager:
 
     @staticmethod
     def _normalize_search_token(text: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", text.lower())
+        return re.sub(r"[^a-z0-9가-힣]+", "", text.casefold())
 
     @staticmethod
     def _build_run_folder_name(filename: str) -> str:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        return f"{timestamp}__{filename}"
+        return f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}__{filename}"
 
     @classmethod
-    def _build_available_filename(
-        cls,
-        filename: str,
-        target_dir: str,
-        output_dir: str,
-    ) -> str:
+    def _build_available_filename(cls, filename: str, target_dir: str, output_dir: str) -> str:
         if not cls._filename_exists(filename, target_dir, output_dir):
             return filename
-
         counter = 2
         while cls._filename_exists(f"{filename}_{counter}", target_dir, output_dir):
             counter += 1
@@ -270,12 +205,11 @@ class ProcessManager:
 
     @staticmethod
     def _filename_exists(filename: str, target_dir: str, output_dir: str) -> bool:
-        candidates = (
+        return any(os.path.exists(path) for path in (
             os.path.join(target_dir, f"{filename}.mp3"),
             os.path.join(target_dir, f"{filename}.jpg"),
             os.path.join(output_dir, f"{filename}.mp4"),
             os.path.join(output_dir, f"{filename}.xml"),
             os.path.join(output_dir, f"{filename}.lrc"),
             os.path.join(output_dir, f"{filename}_lyrics.json"),
-        )
-        return any(os.path.exists(candidate) for candidate in candidates)
+        ))
