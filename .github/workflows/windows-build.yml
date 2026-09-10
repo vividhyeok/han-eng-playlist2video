@@ -5,8 +5,6 @@ on:
     branches:
       - main
       - feat/local-web-batch-workbench
-    tags:
-      - "v*"
   pull_request:
     branches:
       - main
@@ -17,7 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -61,6 +59,14 @@ jobs:
           if (-not (Test-Path "dist/LyricVideoMaker.exe")) { throw "EXE was not created" }
           Get-Item "dist/LyricVideoMaker.exe" | Format-List Name,Length,LastWriteTime
 
+      - name: Smoke-test packaged EXE
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist/LyricVideoMaker.exe" -PassThru
+          Start-Sleep -Seconds 6
+          if ($p.HasExited) { throw "Packaged EXE exited during startup smoke test with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
@@ -68,10 +74,16 @@ jobs:
           path: dist/LyricVideoMaker.exe
           if-no-files-found: error
 
-      - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish downloadable release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" "dist/LyricVideoMaker.exe" --title "Lyric Video Maker ${{ github.ref_name }}" --generate-notes
+          $tag = "v2.0.0"
+          $asset = "dist/LyricVideoMaker.exe"
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag $asset --clobber
+          } else {
+            gh release create $tag $asset --target "${{ github.sha }}" --title "Lyric Video Maker v2.0.0" --notes "Local web workbench release. Download LyricVideoMaker.exe, run it, enter your OpenAI API key in Settings, then paste a song or playlist URL."
+          }
