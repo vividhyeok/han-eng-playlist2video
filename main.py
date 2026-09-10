@@ -1,20 +1,5 @@
-"""Application entry point."""
-
-from __future__ import annotations
-
-import sys
-
-from PyQt6.QtWidgets import QApplication
-
-from app.ui.main_window import MainWindow
-
-
-def main() -> None:
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-
+"""Default entry point: local web workbench."""
+from app.web.server import run
 
 if __name__ == "__main__":
-    main()
+    run()
