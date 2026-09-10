@@ -4,19 +4,23 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-DEFAULT_TRANSLATION_MODEL = "gpt-5.4-mini"
+DEFAULT_TRANSLATION_MODEL = "gpt-5.6-luna"
+REVIEW_TRANSLATION_MODEL = "gpt-5.6-terra"
 
 OPENAI_MODELS: Dict[str, str] = {
-    "gpt-5.4-mini": "GPT-5.4 Mini · recommended",
-    "gpt-5.4-nano": "GPT-5.4 Nano · economy",
-    "gpt-4.1-mini": "GPT-4.1 Mini · legacy",
+    "gpt-5.6-luna": "GPT-5.6 Luna · recommended / high-volume",
+    "gpt-5.6-terra": "GPT-5.6 Terra · higher quality",
+    "gpt-5.6-sol": "GPT-5.6 Sol · maximum quality",
 }
 
 LEGACY_MODEL_ALIASES = {
+    "gpt-5.4-mini": DEFAULT_TRANSLATION_MODEL,
+    "gpt-5.4-nano": DEFAULT_TRANSLATION_MODEL,
     "gpt-4o": DEFAULT_TRANSLATION_MODEL,
     "gpt-4o-mini": DEFAULT_TRANSLATION_MODEL,
     "gpt-4-turbo": DEFAULT_TRANSLATION_MODEL,
     "gpt-4.1": DEFAULT_TRANSLATION_MODEL,
+    "gpt-4.1-mini": DEFAULT_TRANSLATION_MODEL,
     "deepseek-chat": DEFAULT_TRANSLATION_MODEL,
     "gemini-2.0-flash": DEFAULT_TRANSLATION_MODEL,
     "gemini-2.0-flash-lite": DEFAULT_TRANSLATION_MODEL,
