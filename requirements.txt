@@ -8,7 +8,6 @@ pydub>=0.25.1
 PyQt6>=6.7.0
 python-dotenv>=1.0.0
 requests>=2.32.0
-spotdl>=4.2.0
 uvicorn>=0.30.0
 youtube-search-python>=1.6.2
 yt-dlp>=2025.1.15
