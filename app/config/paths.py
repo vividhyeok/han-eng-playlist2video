@@ -20,6 +20,9 @@ TEMP_DIR = os.path.join(DATA_DIR, "temp")
 OUTPUT_DIR = os.path.join(DATA_DIR, "output")
 LYRICS_DIR = os.path.join(DATA_DIR, "lyrics")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
+AUDIO_CACHE_DIR = os.path.join(CACHE_DIR, "audio")
+ART_CACHE_DIR = os.path.join(CACHE_DIR, "art")
+RENDER_CACHE_DIR = os.path.join(CACHE_DIR, "render_assets")
 CONFIG_DIR = os.path.join(DATA_DIR, "config")
 REVIEW_DIR = os.path.join(DATA_DIR, "review")
 
@@ -57,7 +60,10 @@ def _ensure_directories(paths: Iterable[str]) -> None:
 
 def ensure_data_dirs() -> None:
     _ensure_directories(
-        (DATA_DIR, TEMP_DIR, OUTPUT_DIR, LYRICS_DIR, CACHE_DIR, CONFIG_DIR, REVIEW_DIR)
+        (
+            DATA_DIR, TEMP_DIR, OUTPUT_DIR, LYRICS_DIR, CACHE_DIR,
+            AUDIO_CACHE_DIR, ART_CACHE_DIR, RENDER_CACHE_DIR, CONFIG_DIR, REVIEW_DIR,
+        )
     )
 
 
