@@ -9,11 +9,12 @@ import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Literal, Optional
+from typing import Callable, Dict, Literal, Optional
 
 from app.config.paths import AUDIO_CACHE_DIR, LEGACY_LYRICS_DIR, LYRICS_DIR, OUTPUT_DIR, TEMP_DIR, ensure_data_dirs
 from app.export.premiere_exporter import export_premiere_xml
 from app.lyrics.ai_models import has_openai_api_key
+from app.lyrics.auto_sync import auto_sync_plain_lyrics
 from app.lyrics.exception_policy import assess_timing, classify_lyrics
 from app.lyrics.translator_v2 import get_translation_review_issues, parse_lrc_and_translate, parse_lyrics_for_review
 from app.media.video_maker import get_audio_duration, make_lyric_video
@@ -30,10 +31,11 @@ class ReviewRequired(RuntimeError):
 
 
 class TimingReviewRequired(ReviewRequired):
-    def __init__(self, message: str, *, lrc_path: str, score: int = 0):
+    def __init__(self, message: str, *, lrc_path: str, score: int = 0, low_indexes: tuple[int, ...] = ()):
         super().__init__(message)
         self.lrc_path = lrc_path
         self.score = score
+        self.low_indexes = low_indexes
 
 
 class TranslationReviewRequired(ReviewRequired):
@@ -56,6 +58,8 @@ class ProcessConfig:
     prefer_youtube: bool = False
     batch_name: Optional[str] = None
     allow_lyricless: bool = True
+    pretranslated_json_path: Optional[str] = None
+    translation_hints: Optional[Dict[int, str]] = None
 
 
 class ProcessManager:
@@ -93,11 +97,11 @@ class ProcessManager:
         if duration <= 0:
             raise RuntimeError("음원 길이를 읽지 못했습니다.")
 
-        self.update_progress("앨범아트 준비", 26)
+        self.update_progress("앨범아트 준비", 24)
         if not download_album_art(config.album_art_url, image_path, artist=config.artist, title=config.title):
             raise RuntimeError("앨범아트를 가져오지 못했습니다.")
 
-        self.update_progress("가사 확인", 40)
+        self.update_progress("가사 확인", 38)
         lrc_path = self._resolve_lrc_path(config, filename)
 
         if not lrc_path:
@@ -107,17 +111,46 @@ class ProcessManager:
             with open(lyrics_json_path, "w", encoding="utf-8") as file:
                 json.dump([], file)
         else:
-            shutil.copyfile(lrc_path, copied_lrc_path)
             with open(lrc_path, "r", encoding="utf-8") as file:
                 lyric_text = file.read()
 
             if not lyrics_are_synced(lyric_text):
-                raise TimingReviewRequired(
-                    "Plain lyric이므로 타이밍 확인이 필요합니다.",
-                    lrc_path=lrc_path,
-                    score=0,
-                )
+                if has_openai_api_key():
+                    self.update_progress("Plain lyric · AI 자동 싱크", 48)
+                    try:
+                        sync_result = await auto_sync_plain_lyrics(
+                            lrc_path=lrc_path,
+                            audio_path=resolved_audio,
+                            artist=config.artist,
+                            title=config.title,
+                        )
+                        score = int(round(sync_result.confidence * 100))
+                        low_ratio = len(sync_result.low_confidence_indexes) / max(1, len(parse_lyrics_for_review(open(lrc_path, encoding="utf-8").read(), duration=duration)))
+                        if score < 82 or low_ratio > 0.12:
+                            raise TimingReviewRequired(
+                                f"AI 자동 싱크 초안 생성 · 신뢰도 {score}% · 낮은 신뢰도 {len(sync_result.low_confidence_indexes)}줄",
+                                lrc_path=lrc_path,
+                                score=score,
+                                low_indexes=sync_result.low_confidence_indexes,
+                            )
+                        with open(lrc_path, "r", encoding="utf-8") as file:
+                            lyric_text = file.read()
+                    except TimingReviewRequired:
+                        raise
+                    except Exception as exc:
+                        raise TimingReviewRequired(
+                            f"자동 싱크를 확정하지 못했습니다. Tap Sync로 보정하세요: {exc}",
+                            lrc_path=lrc_path,
+                            score=0,
+                        ) from exc
+                else:
+                    raise TimingReviewRequired(
+                        "Plain lyric입니다. OpenAI API 키를 넣으면 자동 싱크를 먼저 시도하고, 아니면 Tap Sync로 맞출 수 있습니다.",
+                        lrc_path=lrc_path,
+                        score=0,
+                    )
 
+            shutil.copyfile(lrc_path, copied_lrc_path)
             parsed_for_qa = parse_lyrics_for_review(lyric_text, duration=duration)
             timing_qa = assess_timing(parsed_for_qa, duration)
             if timing_qa.suspicious:
@@ -132,17 +165,23 @@ class ProcessManager:
             if language_policy.translation_required and not has_openai_api_key():
                 raise RuntimeError("한국어 번역이 필요한 곡인데 OpenAI API 키가 설정되지 않았습니다.")
 
-            self.update_progress(
-                "영어 가사 · 번역 생략" if not language_policy.translation_required else "문맥 기반 한영 번역",
-                62,
-            )
-            await parse_lrc_and_translate(
-                lrc_path,
-                lyrics_json_path,
-                duration=duration,
-                artist=config.artist,
-                title=config.title,
-            )
+            if config.pretranslated_json_path and os.path.exists(config.pretranslated_json_path):
+                self.update_progress("검수 완료 번역 재사용", 66)
+                shutil.copyfile(config.pretranslated_json_path, lyrics_json_path)
+            else:
+                self.update_progress(
+                    "영어 가사 · 번역 생략" if not language_policy.translation_required else "문맥 기반 한영 번역",
+                    62,
+                )
+                await parse_lrc_and_translate(
+                    lrc_path,
+                    lyrics_json_path,
+                    duration=duration,
+                    artist=config.artist,
+                    title=config.title,
+                    human_hints=config.translation_hints,
+                )
+
             issues = get_translation_review_issues(lyrics_json_path)
             if issues:
                 raise TranslationReviewRequired(
@@ -190,7 +229,6 @@ class ProcessManager:
     def _prepare_audio(self, config: ProcessConfig, audio_path: str) -> str:
         if validate_audio_file(audio_path):
             return audio_path
-
         cache_path = self._audio_cache_path(config)
         if validate_audio_file(cache_path):
             shutil.copyfile(cache_path, audio_path)
@@ -204,17 +242,14 @@ class ProcessManager:
                 if os.path.abspath(spotdl_result) != os.path.abspath(audio_path):
                     shutil.move(spotdl_result, audio_path)
                 prepared = audio_path
-
         if not prepared:
             youtube_result = download_youtube_audio(config.youtube_url, audio_path)
             if youtube_result and validate_audio_file(youtube_result):
                 if os.path.abspath(youtube_result) != os.path.abspath(audio_path):
                     shutil.move(youtube_result, audio_path)
                 prepared = audio_path
-
         if not prepared:
             raise RuntimeError("음원 다운로드에 실패했습니다.")
-
         try:
             os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
             shutil.copyfile(prepared, cache_path)
@@ -225,7 +260,6 @@ class ProcessManager:
     def _resolve_lrc_path(self, config: ProcessConfig, filename: str) -> Optional[str]:
         if config.lrc_path and os.path.exists(config.lrc_path):
             return config.lrc_path
-
         search_dirs = [LYRICS_DIR]
         if os.path.isdir(LEGACY_LYRICS_DIR):
             search_dirs.append(LEGACY_LYRICS_DIR)
