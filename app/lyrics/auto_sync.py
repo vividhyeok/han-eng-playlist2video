@@ -1,9 +1,9 @@
 """Automatic timing for plain lyrics using the same OpenAI API key.
 
-Only tracks without trustworthy synchronized lyrics use this path. Audio is transcribed
-with segment timestamps, then the exact known lyric lines are aligned to those segments by
-a cheap GPT-5.6 Luna structured-output pass. Low-confidence results remain editable with
-the tap-sync UI instead of being silently accepted.
+Tracks without trustworthy synchronized lyrics use this path. Whisper provides segment
+timestamps, then GPT-5.6 Luna aligns the exact known lyric lines to those segments. The
+known lyric text remains authoritative; ASR is used only as a timing signal. Low-confidence
+results stay editable with the tap-sync UI instead of being silently accepted.
 """
 from __future__ import annotations
 
@@ -29,7 +29,9 @@ except ImportError:  # pragma: no cover
     BaseModel = None
     Field = None
 
-TRANSCRIBE_MODEL = "gpt-transcribe"
+# timestamp_granularities is currently supported by whisper-1, not gpt-transcribe.
+# We only need rough segment timing here; GPT alignment restores the exact lyric lines.
+TRANSCRIBE_MODEL = "whisper-1"
 ALIGN_MODEL = DEFAULT_TRANSLATION_MODEL
 TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9'’.-]{1,30}|[가-힣]{2,12}")
 
@@ -53,14 +55,26 @@ class AutoSyncResult:
 
 def _keyword_hints(lyrics: Sequence[str], artist: str, title: str) -> List[str]:
     hints: List[str] = []
+    seen: set[str] = set()
     for candidate in [artist, title, *lyrics]:
         for token in TOKEN.findall(candidate or ""):
             value = token.strip()
-            if value and value.casefold() not in {item.casefold() for item in hints}:
+            key = value.casefold()
+            if value and key not in seen:
+                seen.add(key)
                 hints.append(value)
-            if len(hints) >= 40:
+            if len(hints) >= 36:
                 return hints
     return hints
+
+
+def _whisper_prompt(lyrics: Sequence[str], artist: str, title: str) -> str:
+    # Whisper prompts are short context, not general instructions. Feed likely proper nouns,
+    # Korean slang spellings and English code-switching anchors, capped conservatively.
+    hints = _keyword_hints(lyrics, artist, title)
+    prefix = f"{artist} - {title}. "
+    text = prefix + ", ".join(hints)
+    return text[:900]
 
 
 def _segments_from_response(response: Any) -> List[Dict[str, Any]]:
@@ -88,19 +102,13 @@ def _transcribe_sync(audio_path: str, lyrics: Sequence[str], artist: str, title:
     if OpenAI is None or not has_openai_api_key():
         raise RuntimeError("OpenAI transcription is unavailable.")
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    prompt = (
-        f"Korean rap/hip-hop song by {artist}, title {title}. Preserve Korean and English "
-        "code-switching, ad-libs, names, brands, and slang as heard."
-    )
     with open(audio_path, "rb") as audio_file:
         response = client.audio.transcriptions.create(
             model=TRANSCRIBE_MODEL,
             file=audio_file,
             response_format="verbose_json",
             timestamp_granularities=["segment"],
-            languages=["ko", "en"],
-            keywords=_keyword_hints(lyrics, artist, title),
-            prompt=prompt,
+            prompt=_whisper_prompt(lyrics, artist, title),
         )
     return _segments_from_response(response)
 
@@ -164,7 +172,11 @@ async def auto_sync_plain_lyrics(
     with open(lrc_path, "r", encoding="utf-8") as file:
         content = file.read()
     parsed = parse_lyrics_for_review(content, duration=0.0)
-    lyrics = [str(item.get("original", "")).strip() for item in parsed if str(item.get("original", "")).strip()]
+    lyrics = [
+        str(item.get("original", "")).strip()
+        for item in parsed
+        if str(item.get("original", "")).strip()
+    ]
     if not lyrics:
         raise ValueError("Plain lyric file contains no usable lines.")
 
