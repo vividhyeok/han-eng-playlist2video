@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -12,14 +13,33 @@ from typing import Callable, Literal, Optional
 from app.config.paths import LEGACY_LYRICS_DIR, LYRICS_DIR, OUTPUT_DIR, TEMP_DIR, ensure_data_dirs
 from app.export.premiere_exporter import export_premiere_xml
 from app.lyrics.ai_models import has_openai_api_key
-from app.lyrics.translator_v2 import parse_lrc_and_translate
+from app.lyrics.exception_policy import assess_timing, classify_lyrics
+from app.lyrics.translator_v2 import get_translation_review_issues, parse_lrc_and_translate, parse_lyrics_for_review
 from app.media.video_maker import get_audio_duration, make_lyric_video
 from app.sources.album_art_finder import download_album_art
-from app.sources.genie_handler import get_best_lyrics
+from app.sources.genie_handler import get_best_lyrics, lyrics_are_synced
 from app.sources.spotdl_handler import download_audio_simple
 from app.sources.youtube_handler import download_youtube_audio, validate_audio_file
 
 OutputMode = Literal["video", "premiere_xml"]
+
+
+class ReviewRequired(RuntimeError):
+    """Base class for a track that needs human attention but is not a failed job."""
+
+
+class TimingReviewRequired(ReviewRequired):
+    def __init__(self, message: str, *, lrc_path: str, score: int = 0):
+        super().__init__(message)
+        self.lrc_path = lrc_path
+        self.score = score
+
+
+class TranslationReviewRequired(ReviewRequired):
+    def __init__(self, message: str, *, json_path: str, issues: list[dict]):
+        super().__init__(message)
+        self.json_path = json_path
+        self.issues = issues
 
 
 @dataclass
@@ -34,6 +54,7 @@ class ProcessConfig:
     lrc_path: Optional[str] = None
     prefer_youtube: bool = False
     batch_name: Optional[str] = None
+    allow_lyricless: bool = True
 
 
 class ProcessManager:
@@ -67,28 +88,70 @@ class ProcessManager:
 
         self.update_progress("음원 준비", 10)
         resolved_audio = self._prepare_audio(config, audio_path)
-
-        self.update_progress("앨범아트 준비", 28)
-        if not download_album_art(config.album_art_url, image_path, artist=config.artist, title=config.title):
-            raise RuntimeError("앨범아트를 가져오지 못했습니다.")
-
-        self.update_progress("가사 준비", 44)
-        lrc_path = self._resolve_lrc_path(config, filename)
-        if not lrc_path:
-            raise RuntimeError("사용 가능한 가사를 찾지 못했습니다.")
-        shutil.copyfile(lrc_path, copied_lrc_path)
-
-        self.update_progress("전체 문맥 번역", 62)
         duration = get_audio_duration(resolved_audio)
         if duration <= 0:
             raise RuntimeError("음원 길이를 읽지 못했습니다.")
-        await parse_lrc_and_translate(
-            lrc_path,
-            lyrics_json_path,
-            duration=duration,
-            artist=config.artist,
-            title=config.title,
-        )
+
+        self.update_progress("앨범아트 준비", 26)
+        if not download_album_art(config.album_art_url, image_path, artist=config.artist, title=config.title):
+            raise RuntimeError("앨범아트를 가져오지 못했습니다.")
+
+        self.update_progress("가사 확인", 40)
+        lrc_path = self._resolve_lrc_path(config, filename)
+
+        if not lrc_path:
+            if not config.allow_lyricless:
+                raise RuntimeError("사용 가능한 가사를 찾지 못했습니다.")
+            # Missing lyrics are a valid production state. No OpenAI translation call.
+            self.update_progress("가사 없음 · 리릭리스 영상 준비", 64)
+            with open(lyrics_json_path, "w", encoding="utf-8") as file:
+                json.dump([], file)
+        else:
+            shutil.copyfile(lrc_path, copied_lrc_path)
+            with open(lrc_path, "r", encoding="utf-8") as file:
+                lyric_text = file.read()
+
+            # Plain lyrics must be synced before rendering. Do not silently distribute them.
+            if not lyrics_are_synced(lyric_text):
+                raise TimingReviewRequired(
+                    "Plain lyric이므로 타이밍 확인이 필요합니다.",
+                    lrc_path=lrc_path,
+                    score=0,
+                )
+
+            parsed_for_qa = parse_lyrics_for_review(lyric_text, duration=duration)
+            timing_qa = assess_timing(parsed_for_qa, duration)
+            if timing_qa.suspicious:
+                raise TimingReviewRequired(
+                    "가사 타이밍이 의심됩니다: " + ", ".join(timing_qa.reasons),
+                    lrc_path=lrc_path,
+                    score=timing_qa.score,
+                )
+
+            originals = [str(item.get("original", "")) for item in parsed_for_qa]
+            language_policy = classify_lyrics(originals, title=config.title)
+            if language_policy.translation_required and not has_openai_api_key():
+                raise RuntimeError("한국어 번역이 필요한 곡인데 OpenAI API 키가 설정되지 않았습니다.")
+
+            self.update_progress(
+                "영어 가사 · 번역 생략" if not language_policy.translation_required else "문맥 기반 한영 번역",
+                62,
+            )
+            await parse_lrc_and_translate(
+                lrc_path,
+                lyrics_json_path,
+                duration=duration,
+                artist=config.artist,
+                title=config.title,
+            )
+            issues = get_translation_review_issues(lyrics_json_path)
+            if issues:
+                raise TranslationReviewRequired(
+                    f"AI가 {len(issues)}개 구절을 끝까지 확정하지 못했습니다.",
+                    json_path=lyrics_json_path,
+                    issues=issues,
+                )
+
         self._ensure_required_files(resolved_audio, image_path, lyrics_json_path)
 
         if config.output_mode == "premiere_xml":
@@ -117,8 +180,6 @@ class ProcessManager:
             return "YouTube 음원 URL이 필요합니다."
         if config.output_mode not in ("video", "premiere_xml"):
             return "지원하지 않는 출력 형식입니다."
-        if not has_openai_api_key():
-            return "OpenAI API 키가 설정되지 않았습니다."
         return None
 
     def _prepare_audio(self, config: ProcessConfig, audio_path: str) -> str:
