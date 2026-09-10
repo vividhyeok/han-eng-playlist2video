@@ -1,7 +1,8 @@
 """Fast lyric-video rendering while preserving the existing visual identity.
 
 Primary path: one pre-rendered blurred album-art background + ASS subtitles rendered
-inside FFmpeg. A PIL/concat fallback is kept for FFmpeg builds without subtitle support.
+inside FFmpeg. Missing lyrics are a valid state and render as an album-art video with
+audio only. Hardware H.264 encoders are tried opportunistically before libx264.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from app.config.paths import FFMPEG_PATH, FFPROBE_PATH, TEMP_DIR, ensure_data_dirs
 
 FRAME_SIZE = (1920, 1080)
+_ENCODERS: Optional[set[str]] = None
 
 
 def get_audio_duration(audio_path: str) -> float:
@@ -28,6 +30,39 @@ def get_audio_duration(audio_path: str) -> float:
     except Exception as exc:
         print(f"[ERROR] Failed to inspect audio duration: {exc}")
         return 0.0
+
+
+def _available_encoders() -> set[str]:
+    global _ENCODERS
+    if _ENCODERS is not None:
+        return _ENCODERS
+    try:
+        result = subprocess.run(
+            [FFMPEG_PATH, "-hide_banner", "-encoders"],
+            capture_output=True, text=True, check=False,
+        )
+        text = (result.stdout or "") + "\n" + (result.stderr or "")
+        _ENCODERS = {
+            name for name in ("h264_nvenc", "h264_qsv", "h264_amf")
+            if name in text
+        }
+    except Exception:
+        _ENCODERS = set()
+    return _ENCODERS
+
+
+def _video_encoder_candidates() -> List[List[str]]:
+    available = _available_encoders()
+    candidates: List[List[str]] = []
+    # Generic bitrate settings are intentionally used for portability across driver versions.
+    if "h264_nvenc" in available:
+        candidates.append(["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "5M", "-maxrate", "7M", "-bufsize", "10M"])
+    if "h264_qsv" in available:
+        candidates.append(["-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "5M", "-maxrate", "7M", "-bufsize", "10M"])
+    if "h264_amf" in available:
+        candidates.append(["-c:v", "h264_amf", "-quality", "speed", "-b:v", "5M", "-maxrate", "7M", "-bufsize", "10M"])
+    candidates.append(["-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-tune", "stillimage"])
+    return candidates
 
 
 def _resolve_font_path() -> Optional[str]:
@@ -110,12 +145,15 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         end = max(start + 0.12, min(end, duration))
         original = _ass_escape(item.get("original", ""))
         english = _ass_escape(item.get("english", ""))
+        # English-only tracks intentionally avoid duplicating the same line twice.
+        same_line = original.casefold().strip() == english.casefold().strip()
         if original:
+            y = 790 if same_line else 710
             events.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Original,,0,0,0,,"
-                f"{{\\an8\\pos(960,710)\\q2}}{_font_override(original, 60, korean=True)}{original}"
+                f"{{\\an8\\pos(960,{y})\\q2}}{_font_override(original, 60, korean=True)}{original}"
             )
-        if english:
+        if english and not same_line:
             events.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},English,,0,0,0,,"
                 f"{{\\an8\\pos(960,855)\\q2}}{_font_override(english, 55, korean=False)}{english}"
@@ -129,17 +167,51 @@ def _ffmpeg_subtitle_path(path: str) -> str:
     return normalized.replace(":", r"\:").replace("'", r"\'")
 
 
+def _encode_still_video(
+    *, audio_path: str, base_path: str, output_path: str, duration: float,
+    subtitle_filter: Optional[str] = None,
+) -> None:
+    last_error: Optional[subprocess.CalledProcessError] = None
+    for encoder_args in _video_encoder_candidates():
+        command = [
+            FFMPEG_PATH, "-y", "-loop", "1", "-framerate", "30", "-i", base_path,
+            "-i", audio_path,
+        ]
+        if subtitle_filter:
+            command += ["-vf", subtitle_filter]
+        command += [
+            "-t", f"{duration:.3f}", *encoder_args,
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", "-shortest", output_path,
+        ]
+        try:
+            subprocess.run(command, check=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            print(f"[WARN] Video encoder failed ({encoder_args[1]}), trying fallback.")
+    if last_error:
+        raise last_error
+    raise RuntimeError("No video encoder candidate was available.")
+
+
 def _render_fast(audio_path: str, base_path: str, ass_path: str, output_path: str, duration: float) -> None:
-    subprocess.run([
-        FFMPEG_PATH, "-y",
-        "-loop", "1", "-framerate", "30", "-i", base_path,
-        "-i", audio_path,
-        "-vf", f"subtitles='{_ffmpeg_subtitle_path(ass_path)}'",
-        "-t", f"{duration:.3f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-tune", "stillimage",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart", "-shortest", output_path,
-    ], check=True)
+    _encode_still_video(
+        audio_path=audio_path,
+        base_path=base_path,
+        output_path=output_path,
+        duration=duration,
+        subtitle_filter=f"subtitles='{_ffmpeg_subtitle_path(ass_path)}'",
+    )
+
+
+def _render_lyricless(audio_path: str, base_path: str, output_path: str, duration: float) -> None:
+    _encode_still_video(
+        audio_path=audio_path,
+        base_path=base_path,
+        output_path=output_path,
+        duration=duration,
+    )
 
 
 def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> float:
@@ -179,6 +251,12 @@ def _draw_centered_block(draw: ImageDraw.ImageDraw, lines: List[str], font: Imag
 
 
 def _render_fallback(audio_path: str, base: Image.Image, lyrics: List[dict], output_path: str, duration: float) -> None:
+    if not lyrics:
+        base_path = os.path.join(TEMP_DIR, "lyricless_base.jpg")
+        base.convert("RGB").save(base_path, quality=94, optimize=True)
+        _render_lyricless(audio_path, base_path, output_path, duration)
+        return
+
     frames_dir = os.path.join(TEMP_DIR, "fallback_frames")
     os.makedirs(frames_dir, exist_ok=True)
     for entry in os.listdir(frames_dir):
@@ -200,8 +278,12 @@ def _render_fallback(audio_path: str, base: Image.Image, lyrics: List[dict], out
         end = max(end, start + 0.12)
         frame = base.copy().convert("RGB")
         draw = ImageDraw.Draw(frame)
-        _draw_centered_block(draw, _wrap(draw, lyric.get("original", ""), original_font, 1650)[:2], original_font, 700)
-        _draw_centered_block(draw, _wrap(draw, lyric.get("english", ""), english_font, 1650)[:3], english_font, 850)
+        original = str(lyric.get("original", ""))
+        english = str(lyric.get("english", ""))
+        same_line = original.casefold().strip() == english.casefold().strip()
+        _draw_centered_block(draw, _wrap(draw, original, original_font, 1650)[:2], original_font, 770 if same_line else 700)
+        if english and not same_line:
+            _draw_centered_block(draw, _wrap(draw, english, english_font, 1650)[:3], english_font, 850)
         path = os.path.join(frames_dir, f"frame_{index:04d}.jpg")
         frame.save(path, quality=92, optimize=True)
         entries += [f"file '{path.replace(os.sep, '/')}'", f"duration {end-start:.3f}"]
@@ -226,8 +308,8 @@ def make_lyric_video(audio_path: str, album_art_path: str, lyrics_json_path: str
         base = prepare_base_frame(image)
     with open(lyrics_json_path, "r", encoding="utf-8") as file:
         lyrics = json.load(file)
-    if not lyrics:
-        raise ValueError("Lyrics JSON is empty.")
+    if not isinstance(lyrics, list):
+        raise ValueError("Lyrics JSON must be a list.")
 
     work_dir = os.path.join(TEMP_DIR, "render_assets")
     os.makedirs(work_dir, exist_ok=True)
@@ -235,6 +317,12 @@ def make_lyric_video(audio_path: str, album_art_path: str, lyrics_json_path: str
     base_path = os.path.join(work_dir, f"{stem}_base.jpg")
     ass_path = os.path.join(work_dir, f"{stem}.ass")
     base.convert("RGB").save(base_path, quality=94, optimize=True)
+
+    if not lyrics:
+        _render_lyricless(audio_path, base_path, output_path, duration)
+        print(f"[INFO] Lyricless render saved to {output_path}")
+        return
+
     _write_ass(lyrics, duration, ass_path)
     try:
         _render_fast(audio_path, base_path, ass_path, output_path, duration)
