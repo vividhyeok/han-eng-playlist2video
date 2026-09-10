@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Literal, Optional
 
-from app.config.paths import LEGACY_LYRICS_DIR, LYRICS_DIR, OUTPUT_DIR, TEMP_DIR, ensure_data_dirs
+from app.config.paths import AUDIO_CACHE_DIR, LEGACY_LYRICS_DIR, LYRICS_DIR, OUTPUT_DIR, TEMP_DIR, ensure_data_dirs
 from app.export.premiere_exporter import export_premiere_xml
 from app.lyrics.ai_models import has_openai_api_key
 from app.lyrics.exception_policy import assess_timing, classify_lyrics
@@ -102,7 +103,6 @@ class ProcessManager:
         if not lrc_path:
             if not config.allow_lyricless:
                 raise RuntimeError("사용 가능한 가사를 찾지 못했습니다.")
-            # Missing lyrics are a valid production state. No OpenAI translation call.
             self.update_progress("가사 없음 · 리릭리스 영상 준비", 64)
             with open(lyrics_json_path, "w", encoding="utf-8") as file:
                 json.dump([], file)
@@ -111,7 +111,6 @@ class ProcessManager:
             with open(lrc_path, "r", encoding="utf-8") as file:
                 lyric_text = file.read()
 
-            # Plain lyrics must be synced before rendering. Do not silently distribute them.
             if not lyrics_are_synced(lyric_text):
                 raise TimingReviewRequired(
                     "Plain lyric이므로 타이밍 확인이 필요합니다.",
@@ -182,21 +181,46 @@ class ProcessManager:
             return "지원하지 않는 출력 형식입니다."
         return None
 
+    @staticmethod
+    def _audio_cache_path(config: ProcessConfig) -> str:
+        raw = f"{config.youtube_url.strip()}\n{config.artist.casefold()}\n{config.title.casefold()}"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return os.path.join(AUDIO_CACHE_DIR, f"{digest}.mp3")
+
     def _prepare_audio(self, config: ProcessConfig, audio_path: str) -> str:
         if validate_audio_file(audio_path):
             return audio_path
+
+        cache_path = self._audio_cache_path(config)
+        if validate_audio_file(cache_path):
+            shutil.copyfile(cache_path, audio_path)
+            if validate_audio_file(audio_path):
+                return audio_path
+
+        prepared: Optional[str] = None
         if not config.prefer_youtube:
             spotdl_result = download_audio_simple(config.artist, config.title, os.path.dirname(audio_path))
             if spotdl_result and validate_audio_file(spotdl_result):
                 if os.path.abspath(spotdl_result) != os.path.abspath(audio_path):
                     shutil.move(spotdl_result, audio_path)
-                return audio_path
-        youtube_result = download_youtube_audio(config.youtube_url, audio_path)
-        if youtube_result and validate_audio_file(youtube_result):
-            if os.path.abspath(youtube_result) != os.path.abspath(audio_path):
-                shutil.move(youtube_result, audio_path)
-            return audio_path
-        raise RuntimeError("음원 다운로드에 실패했습니다.")
+                prepared = audio_path
+
+        if not prepared:
+            youtube_result = download_youtube_audio(config.youtube_url, audio_path)
+            if youtube_result and validate_audio_file(youtube_result):
+                if os.path.abspath(youtube_result) != os.path.abspath(audio_path):
+                    shutil.move(youtube_result, audio_path)
+                prepared = audio_path
+
+        if not prepared:
+            raise RuntimeError("음원 다운로드에 실패했습니다.")
+
+        try:
+            os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
+            shutil.copyfile(prepared, cache_path)
+        except OSError:
+            pass
+        return prepared
 
     def _resolve_lrc_path(self, config: ProcessConfig, filename: str) -> Optional[str]:
         if config.lrc_path and os.path.exists(config.lrc_path):
