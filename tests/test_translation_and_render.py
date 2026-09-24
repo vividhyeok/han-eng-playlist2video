@@ -2,19 +2,29 @@ import os
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 from PIL import Image
 
 from app.lyrics.exception_policy import classify_lyrics, extract_protected_english
-from app.lyrics.translator_v2 import _repeat_groups, parse_lrc_and_translate
+from app.lyrics.translator_v2 import (
+    _repeat_groups, _request_translation, parse_lrc_and_translate,
+)
 from app.media.video_maker import (
     _crop_to_aspect, _group_simultaneous_lyrics, _wrap_subtitle, _write_ass,
     prepare_base_frame,
 )
 from app.ui.translation_dialog import apply_manual_translations
+from app.pipeline.process_manager import ProcessConfig, ProcessManager
 
 
 class TranslationPolicyTests(unittest.TestCase):
+    def test_process_validation_and_korean_search_normalization(self):
+        manager = ProcessManager(lambda *_: None)
+        config = ProcessConfig(title="", artist="", album_art_url="", youtube_url="")
+        self.assertEqual(manager.validate_config(config), "제목과 아티스트 정보가 필요합니다.")
+        self.assertEqual(manager._normalize_search_token("비와이 - Sweet Escape!"), "비와이sweetescape")
+
     def test_manual_translation_clears_review_marker(self):
         handle, path = tempfile.mkstemp(suffix=".json")
         os.close(handle)
@@ -35,6 +45,48 @@ class TranslationPolicyTests(unittest.TestCase):
             self.assertEqual(result["translation_meta"]["model"], "manual")
         finally:
             os.remove(path)
+
+
+class StructuredTranslationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_context_index_returned_as_extra_is_ignored(self):
+        class FakeResponses:
+            async def parse(self, **_kwargs):
+                lines = [
+                    SimpleNamespace(index=0, translated="First", confidence=0.9, needs_review=False, ambiguity_question=""),
+                    SimpleNamespace(index=1, translated="Second", confidence=0.9, needs_review=False, ambiguity_question=""),
+                    SimpleNamespace(index=40, translated="Context only", confidence=0.9, needs_review=False, ambiguity_question=""),
+                ]
+                return SimpleNamespace(output_parsed=SimpleNamespace(lines=lines))
+
+        client = SimpleNamespace(responses=FakeResponses())
+        result = await _request_translation(
+            client,
+            model="gpt-5.6-terra",
+            stage="base",
+            artist="Artist",
+            title="Title",
+            lyrics=["첫째", "둘째"],
+            indexes=[0, 1],
+        )
+        self.assertEqual(set(result), {0, 1})
+
+    async def test_missing_requested_index_still_fails(self):
+        class FakeResponses:
+            async def parse(self, **_kwargs):
+                line = SimpleNamespace(index=0, translated="First", confidence=0.9, needs_review=False, ambiguity_question="")
+                return SimpleNamespace(output_parsed=SimpleNamespace(lines=[line]))
+
+        client = SimpleNamespace(responses=FakeResponses())
+        with self.assertRaisesRegex(ValueError, "missing=\\[1\\]"):
+            await _request_translation(
+                client,
+                model="gpt-5.6-terra",
+                stage="base",
+                artist="Artist",
+                title="Title",
+                lyrics=["첫째", "둘째"],
+                indexes=[0, 1],
+            )
 
     def test_mixed_korean_english_requires_translation(self):
         policy = classify_lyrics(["난 Seoul에서 flex with my crew"])

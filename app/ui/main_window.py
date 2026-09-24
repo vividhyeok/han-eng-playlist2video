@@ -393,22 +393,22 @@ class PlaylistPipelineWindow(QMainWindow):
 
         playlist_url = self.playlist_url_input.text().strip()
         if not playlist_url:
-            QMessageBox.warning(self, "Missing playlist URL", "Paste a playlist URL first.")
+            QMessageBox.warning(self, "플레이리스트 URL 필요", "플레이리스트 URL을 먼저 입력해 주세요.")
             return
 
         if "list=" not in playlist_url:
             QMessageBox.warning(
                 self,
-                "Invalid playlist URL",
-                "Paste a YouTube or YouTube Music playlist URL that includes a list parameter.",
+                "URL 확인",
+                "list 매개변수가 포함된 YouTube 또는 YouTube Music 플레이리스트 URL을 입력해 주세요.",
             )
             return
 
         if self.queue_items or self.skipped_list.count():
             reply = QMessageBox.question(
                 self,
-                "Replace current analysis",
-                "Analyze a new playlist and replace the current queue and skipped list?",
+                "현재 분석 교체",
+                "현재 대기열과 제외 목록을 지우고 새 플레이리스트를 분석할까요?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -418,9 +418,9 @@ class PlaylistPipelineWindow(QMainWindow):
         self._reset_analysis_views()
         self.progress_log.clear()
         self.progress_bar.setRange(0, 0)
-        self.playlist_title_value.setText("Analyzing playlist...")
-        self.ready_status_value.setText("Importing playlist metadata and lyrics...")
-        self.append_progress_message("Starting playlist analysis...")
+        self.playlist_title_value.setText("플레이리스트 분석 중...")
+        self.ready_status_value.setText("곡 정보와 가사를 가져오는 중...")
+        self.append_progress_message("플레이리스트 분석을 시작합니다.")
         self.set_processing_state(True)
 
         self.import_worker = PlaylistImportWorker(
@@ -477,10 +477,10 @@ class PlaylistPipelineWindow(QMainWindow):
         )
 
     def on_playlist_import_error(self, error_message: str) -> None:
-        self.playlist_title_value.setText("Playlist analysis failed.")
-        self.ready_status_value.setText("Import failed")
-        self.append_progress_message(f"Playlist import failed: {error_message}")
-        QMessageBox.critical(self, "Playlist import failed", error_message)
+        self.playlist_title_value.setText("플레이리스트 분석 실패")
+        self.ready_status_value.setText("분석 실패")
+        self.append_progress_message(f"플레이리스트 분석 실패: {error_message}")
+        QMessageBox.critical(self, "플레이리스트 분석 실패", error_message)
 
     def start_batch_processing(self) -> None:
         if self.worker is not None or self.import_worker is not None or not self.queue_items:
@@ -494,7 +494,7 @@ class PlaylistPipelineWindow(QMainWindow):
             f"Starting batch render for {len(self.queue_items)} track(s). "
             f"Batch folder: {self.current_queue_batch_name}"
         )
-        self.ready_status_value.setText("Rendering queue...")
+        self.ready_status_value.setText("대기열 렌더링 중...")
         self._start_next_queue_item()
 
     def _start_next_queue_item(self) -> None:
@@ -502,9 +502,9 @@ class PlaylistPipelineWindow(QMainWindow):
             self.processing_mode = None
             self.current_queue_batch_name = None
             self.set_processing_state(False)
-            self.ready_status_value.setText("Batch render complete")
-            self.append_progress_message("Batch render complete.")
-            QMessageBox.information(self, "Queue complete", "All queued jobs finished.")
+            self.ready_status_value.setText("전체 렌더링 완료")
+            self.append_progress_message("대기열 렌더링이 완료되었습니다.")
+            QMessageBox.information(self, "완료", "대기열의 모든 곡 처리가 끝났습니다.")
             return
 
         queue_item = self.queue_items[self.current_queue_index]
@@ -521,8 +521,8 @@ class PlaylistPipelineWindow(QMainWindow):
         if validation_error:
             self.processing_mode = None
             self.current_queue_batch_name = None
-            self.ready_status_value.setText("Validation failed")
-            QMessageBox.warning(self, "Invalid configuration", validation_error)
+            self.ready_status_value.setText("설정 확인 필요")
+            QMessageBox.warning(self, "설정 확인", validation_error)
             return
 
         self.set_processing_state(True)
@@ -546,7 +546,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         self.processing_mode = None
         self.set_processing_state(False)
-        self.ready_status_value.setText("Idle")
+        self.ready_status_value.setText("준비됨")
 
     def on_process_error(self, error: object) -> None:
         error_message = str(error)
@@ -556,6 +556,7 @@ class PlaylistPipelineWindow(QMainWindow):
             dialog = ManualSyncDialog(
                 audio_path=error.audio_path,
                 lrc_path=error.lrc_path,
+                low_indexes=error.low_indexes,
                 parent=self,
             )
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -586,13 +587,15 @@ class PlaylistPipelineWindow(QMainWindow):
                 self._start_worker(config)
                 return
         if self.processing_mode == "queue":
-            reply = QMessageBox.question(
-                self,
-                "Queue item failed",
-                f"{error_message}\n\nContinue with the next queued item?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
+            prompt = QMessageBox(self)
+            prompt.setIcon(QMessageBox.Icon.Warning)
+            prompt.setWindowTitle("현재 곡 처리 실패")
+            prompt.setText(error_message)
+            prompt.setInformativeText("이 곡을 건너뛰고 다음 곡을 계속 처리할까요?")
+            skip_button = prompt.addButton("다음 곡 계속", QMessageBox.ButtonRole.AcceptRole)
+            prompt.addButton("전체 작업 중단", QMessageBox.ButtonRole.RejectRole)
+            prompt.exec()
+            if prompt.clickedButton() is skip_button:
                 self.current_queue_index += 1
                 self._start_next_queue_item()
                 return
@@ -600,8 +603,8 @@ class PlaylistPipelineWindow(QMainWindow):
         self.processing_mode = None
         self.current_queue_batch_name = None
         self.set_processing_state(False)
-        self.ready_status_value.setText("Batch render interrupted")
-        QMessageBox.critical(self, "Processing failed", error_message)
+        self.ready_status_value.setText("작업 중단됨")
+        QMessageBox.critical(self, "처리 실패", error_message)
 
     def remove_selected_queue_item(self) -> None:
         row = self.queue_list.currentRow()
@@ -630,7 +633,7 @@ class PlaylistPipelineWindow(QMainWindow):
             return
 
         self._reset_analysis_views()
-        self.ready_status_value.setText("Idle")
+        self.ready_status_value.setText("준비됨")
         self.append_progress_message("Cleared the current analysis.")
 
     def clean_temp_files(self) -> None:
@@ -667,7 +670,7 @@ class PlaylistPipelineWindow(QMainWindow):
                 self.append_progress_message(f"Failed to remove cache: {exc}")
 
         self.append_progress_message(f"Cleaned {deleted} temp file(s).")
-        QMessageBox.information(self, "Cleanup complete", "Temporary files were removed.")
+        QMessageBox.information(self, "정리 완료", "임시 파일을 삭제했습니다.")
 
     def save_api_key(self) -> None:
         key = self.api_key_input.text().strip()

@@ -273,6 +273,7 @@ async def _request_translation(
         "artist": artist,
         "title": title,
         "stage": stage,
+        "requested_indexes": list(indexes),
         "repeated_line_groups": _repeat_groups(lyrics),
         "lines": selected,
     }
@@ -290,11 +291,17 @@ async def _request_translation(
 
     expected = set(indexes)
     returned = {item.index for item in parsed.lines}
-    if returned != expected:
-        raise ValueError(f"{model} index mismatch: missing={sorted(expected-returned)} extra={sorted(returned-expected)}")
+    missing = expected - returned
+    if missing:
+        raise ValueError(f"{model} index mismatch: missing={sorted(missing)}")
 
     result: Dict[int, dict[str, Any]] = {}
     for item in parsed.lines:
+        # Nearby context contains real line indexes, and models occasionally include one
+        # of them in the structured answer. Requested lines are complete, so extras are
+        # harmless and must not fail an otherwise valid song translation.
+        if item.index not in expected:
+            continue
         translated = _clean(item.translated)
         confidence = max(0.0, min(1.0, float(item.confidence)))
         result[item.index] = {

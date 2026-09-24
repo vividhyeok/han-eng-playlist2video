@@ -145,14 +145,16 @@ the structured payload."""
         raise ValueError("Auto-sync alignment returned no structured payload.")
     expected = set(range(len(lyrics)))
     returned = {item.index for item in parsed.lines}
-    if returned != expected:
-        raise ValueError(f"Auto-sync index mismatch: missing={sorted(expected-returned)}")
+    missing = expected - returned
+    if missing:
+        raise ValueError(f"Auto-sync index mismatch: missing={sorted(missing)}")
     return {
         item.index: {
             "start_time": max(0.0, float(item.start_time)),
             "confidence": max(0.0, min(1.0, float(item.confidence))),
         }
         for item in parsed.lines
+        if item.index in expected
     }
 
 

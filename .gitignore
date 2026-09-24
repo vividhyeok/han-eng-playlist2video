@@ -20,6 +20,7 @@ uploader/
 ffmpeg-8.0.1-essentials_build/
 *.zip
 *.mp4
+release/
 
 # IDE/editor files
 .vscode/

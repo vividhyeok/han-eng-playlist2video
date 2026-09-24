@@ -36,12 +36,13 @@ def _format_time(seconds: float) -> str:
 
 
 class ManualSyncDialog(QDialog):
-    def __init__(self, *, audio_path: str, lrc_path: str, parent=None):
+    def __init__(self, *, audio_path: str, lrc_path: str, low_indexes: tuple[int, ...] = (), parent=None):
         super().__init__(parent)
         self.audio_path = audio_path
         self.lrc_path = lrc_path
         self.points = _load_points(lrc_path)
-        self.current_index = 0
+        self.low_indexes = set(low_indexes)
+        self.current_index = min(self.low_indexes) if self.low_indexes else 0
 
         self.setWindowTitle("수동 탭 싱크")
         self.resize(900, 680)
@@ -143,7 +144,10 @@ class ManualSyncDialog(QDialog):
         self.lines.clear()
         for index, point in enumerate(self.points):
             marker = "▶" if index == self.current_index else " "
-            self.lines.addItem(f"{marker}  {_format_time(float(point['time']))}    {point['text']}")
+            warning = "⚠ 확인 권장" if index in self.low_indexes else ""
+            self.lines.addItem(
+                f"{marker}  {_format_time(float(point['time']))}    {point['text']}  {warning}"
+            )
         self.lines.setCurrentRow(self.current_index)
         self.lines.scrollToItem(self.lines.currentItem())
         self.lines.blockSignals(False)

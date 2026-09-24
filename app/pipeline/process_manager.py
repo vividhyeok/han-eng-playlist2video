@@ -222,10 +222,138 @@ class ProcessManager:
         self.update_progress("완료", 100)
         return result
 
+    async def process_async(self, config: ProcessConfig) -> str:
+        """Run one track through a deterministic, review-aware workflow."""
+        ensure_data_dirs()
+        base_filename = self._sanitize_filename(f"{config.artist} - {config.title}")
+        if config.batch_name:
+            run_folder_name = config.batch_name
+            run_target_dir = os.path.join(config.target_dir, run_folder_name)
+            run_output_dir = os.path.join(config.output_dir, run_folder_name)
+            os.makedirs(run_target_dir, exist_ok=True)
+            os.makedirs(run_output_dir, exist_ok=True)
+            filename = self._build_available_filename(base_filename, run_target_dir, run_output_dir)
+        else:
+            filename = base_filename
+            run_folder_name = self._build_run_folder_name(filename)
+            run_target_dir = os.path.join(config.target_dir, run_folder_name)
+            run_output_dir = os.path.join(config.output_dir, run_folder_name)
+
+        os.makedirs(run_target_dir, exist_ok=True)
+        os.makedirs(run_output_dir, exist_ok=True)
+        audio_path = os.path.join(run_target_dir, f"{filename}.mp3")
+        image_path = os.path.join(run_target_dir, f"{filename}.jpg")
+        lyrics_json_path = os.path.join(run_output_dir, f"{filename}_lyrics.json")
+        output_path = os.path.join(run_output_dir, f"{filename}.mp4")
+        premiere_xml_path = os.path.join(run_output_dir, f"{filename}.xml")
+        copied_lrc_path = os.path.join(run_output_dir, f"{filename}.lrc")
+
+        self.update_progress("음원 준비", 10)
+        resolved_audio = self._prepare_audio(config, audio_path)
+        duration = get_audio_duration(resolved_audio)
+        if duration <= 0:
+            raise RuntimeError("음원 길이를 확인하지 못했습니다.")
+
+        self.update_progress("앨범아트 준비", 24)
+        if not download_album_art(config.album_art_url, image_path, artist=config.artist, title=config.title):
+            raise RuntimeError("앨범아트를 가져오지 못했습니다.")
+
+        self.update_progress("가사 확인", 38)
+        lrc_path = self._resolve_lrc_path(config, filename)
+        if not lrc_path:
+            if not config.allow_lyricless:
+                raise RuntimeError("사용 가능한 가사를 찾지 못했습니다.")
+            self.update_progress("가사 없는 영상 준비", 64)
+            with open(lyrics_json_path, "w", encoding="utf-8") as file:
+                json.dump([], file)
+        else:
+            with open(lrc_path, "r", encoding="utf-8") as file:
+                lyric_text = file.read()
+
+            if not lyrics_are_synced(lyric_text):
+                if not has_openai_api_key():
+                    raise TimingReviewRequired(
+                        "일반 가사에는 타임코드가 필요합니다. API 키를 설정하거나 수동 싱크로 맞춰 주세요.",
+                        lrc_path=lrc_path, audio_path=resolved_audio,
+                    )
+                self.update_progress("AI 싱크 초안 생성", 48)
+                try:
+                    sync_result = await auto_sync_plain_lyrics(
+                        lrc_path=lrc_path, audio_path=resolved_audio,
+                        artist=config.artist, title=config.title,
+                    )
+                except Exception as exc:
+                    raise TimingReviewRequired(
+                        f"AI 싱크 초안을 만들지 못했습니다. 수동 탭 싱크로 맞춰 주세요. ({exc})",
+                        lrc_path=lrc_path, audio_path=resolved_audio,
+                    ) from exc
+                score = int(round(sync_result.confidence * 100))
+                raise TimingReviewRequired(
+                    f"AI 싱크 초안을 만들었습니다. 직접 재생하며 확인해 주세요. "
+                    f"신뢰도 {score}%, 확인 권장 {len(sync_result.low_confidence_indexes)}줄",
+                    lrc_path=lrc_path, audio_path=resolved_audio, score=score,
+                    low_indexes=sync_result.low_confidence_indexes,
+                )
+
+            shutil.copyfile(lrc_path, copied_lrc_path)
+            parsed_for_qa = parse_lyrics_for_review(lyric_text, duration=duration)
+            timing_qa = assess_timing(parsed_for_qa, duration)
+            if timing_qa.suspicious:
+                raise TimingReviewRequired(
+                    "가사 타임라인을 직접 확인해 주세요: " + ", ".join(timing_qa.reasons),
+                    lrc_path=lrc_path, audio_path=resolved_audio, score=timing_qa.score,
+                )
+
+            originals = [str(item.get("original", "")) for item in parsed_for_qa]
+            language_policy = classify_lyrics(originals, title=config.title)
+            if language_policy.translation_required and not has_openai_api_key():
+                raise RuntimeError("한글 가사를 번역하려면 OpenAI API 키가 필요합니다.")
+
+            if config.pretranslated_json_path and os.path.exists(config.pretranslated_json_path):
+                self.update_progress("직접 확인한 번역 적용", 66)
+                shutil.copyfile(config.pretranslated_json_path, lyrics_json_path)
+            else:
+                message = "영문 가사 · 번역 생략" if not language_policy.translation_required else "문맥 기반 한영 번역"
+                self.update_progress(message, 62)
+                await parse_lrc_and_translate(
+                    lrc_path, lyrics_json_path, duration=duration,
+                    artist=config.artist, title=config.title,
+                    human_hints=config.translation_hints,
+                )
+
+            issues = get_translation_review_issues(lyrics_json_path)
+            if issues:
+                raise TranslationReviewRequired(
+                    f"직접 확인이 필요한 번역이 {len(issues)}개 있습니다.",
+                    json_path=lyrics_json_path, issues=issues,
+                )
+
+        self._ensure_required_files(resolved_audio, image_path, lyrics_json_path)
+        if config.output_mode == "premiere_xml":
+            self.update_progress("Premiere XML 생성", 88)
+            result = export_premiere_xml(
+                audio_path=resolved_audio, album_art_path=image_path,
+                lyrics_json_path=lyrics_json_path, output_xml_path=premiere_xml_path,
+            )
+        else:
+            self.update_progress("영상 렌더링", 84)
+            make_lyric_video(resolved_audio, image_path, lyrics_json_path, output_path)
+            result = output_path
+        self.update_progress("완료", 100)
+        return result
+
     def process(self, config: ProcessConfig) -> str:
         return asyncio.run(self.process_async(config))
 
     def validate_config(self, config: ProcessConfig) -> Optional[str]:
+        if not config.title.strip() or not config.artist.strip():
+            return "제목과 아티스트 정보가 필요합니다."
+        if not config.youtube_url.strip():
+            return "YouTube 음원 URL이 필요합니다."
+        if config.output_mode not in ("video", "premiere_xml"):
+            return "지원하지 않는 출력 형식입니다."
+        return None
+
         if not config.title.strip() or not config.artist.strip():
             return "제목과 아티스트가 필요합니다."
         if not config.youtube_url.strip():
@@ -321,6 +449,8 @@ class ProcessManager:
 
     @staticmethod
     def _normalize_search_token(text: str) -> str:
+        return re.sub(r"[^a-z0-9가-힣]+", "", text.casefold())
+
         return re.sub(r"[^a-z0-9가-힣]+", "", text.casefold())
 
     @staticmethod
