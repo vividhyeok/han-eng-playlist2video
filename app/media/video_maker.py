@@ -17,6 +17,8 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from app.config.paths import FFMPEG_PATH, FFPROBE_PATH, TEMP_DIR, ensure_data_dirs
 
 FRAME_SIZE = (1920, 1080)
+ART_SIZE = 500
+ART_TOP = 170
 _ENCODERS: Optional[set[str]] = None
 
 
@@ -90,12 +92,31 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def _crop_to_aspect(image: Image.Image, target_ratio: float) -> Image.Image:
+    """Center-crop without stretching, preserving the source artwork geometry."""
+    width, height = image.size
+    source_ratio = width / max(1, height)
+    if source_ratio > target_ratio:
+        crop_width = max(1, round(height * target_ratio))
+        left = (width - crop_width) // 2
+        return image.crop((left, 0, left + crop_width, height))
+    crop_height = max(1, round(width / target_ratio))
+    top = (height - crop_height) // 2
+    return image.crop((0, top, width, top + crop_height))
+
+
 def prepare_base_frame(background_img: Image.Image) -> Image.Image:
-    frame = background_img.convert("RGBA").resize(FRAME_SIZE, Image.Resampling.LANCZOS)
-    blurred = frame.filter(ImageFilter.GaussianBlur(radius=30))
-    base = Image.alpha_composite(blurred, Image.new("RGBA", frame.size, (0, 0, 0, 160)))
-    art_img = background_img.convert("RGBA").resize((500, 500), Image.Resampling.LANCZOS)
-    base.paste(art_img, ((FRAME_SIZE[0] - 500) // 2, 180), art_img)
+    source = background_img.convert("RGBA")
+    background = _crop_to_aspect(source, FRAME_SIZE[0] / FRAME_SIZE[1])
+    frame = background.resize(FRAME_SIZE, Image.Resampling.LANCZOS)
+    blurred = frame.filter(ImageFilter.GaussianBlur(radius=32))
+    base = Image.alpha_composite(blurred, Image.new("RGBA", frame.size, (0, 0, 0, 145)))
+
+    # Playlist sources sometimes provide a 16:9 video thumbnail with the square cover
+    # centered inside it. Crop the center square first; never squash the full thumbnail.
+    square_art = _crop_to_aspect(source, 1.0)
+    art_img = square_art.resize((ART_SIZE, ART_SIZE), Image.Resampling.LANCZOS)
+    base.paste(art_img, ((FRAME_SIZE[0] - ART_SIZE) // 2, ART_TOP), art_img)
     return base
 
 
@@ -167,8 +188,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: Original,Malgun Gothic,60,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,8,110,110,0,1
-Style: English,Malgun Gothic,55,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,8,110,110,0,1
+Style: Original,Malgun Gothic,60,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,8,110,110,0,1
+Style: English,Malgun Gothic,55,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,8,110,110,0,1
 
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
@@ -186,15 +207,17 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         # English-only tracks intentionally avoid duplicating the same line twice.
         same_line = raw_original.casefold().strip() == raw_english.casefold().strip()
         if original:
-            y = 785 if same_line else 690
+            y = 730 if not same_line else 750
             events.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Original,,0,0,0,,"
                 f"{{\\an8\\pos(960,{y})\\q2}}{_font_override(original, 60, korean=True)}{original}"
             )
         if english and not same_line:
+            original_lines = original.count(r"\N") + 1
+            english_y = 835 + (original_lines - 1) * 72
             events.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},English,,0,0,0,,"
-                f"{{\\an8\\pos(960,865)\\q2}}{_font_override(english, 55, korean=False)}{english}"
+                f"{{\\an8\\pos(960,{english_y})\\q2}}{_font_override(english, 55, korean=False)}{english}"
             )
     with open(ass_path, "w", encoding="utf-8-sig") as file:
         file.write(header + "\n".join(events) + "\n")
@@ -319,9 +342,11 @@ def _render_fallback(audio_path: str, base: Image.Image, lyrics: List[dict], out
         original = str(lyric.get("original", ""))
         english = str(lyric.get("english", ""))
         same_line = original.casefold().strip() == english.casefold().strip()
-        _draw_centered_block(draw, _wrap(draw, original, original_font, 1650)[:2], original_font, 770 if same_line else 700)
+        original_lines = _wrap(draw, original, original_font, 1650)[:2]
+        _draw_centered_block(draw, original_lines, original_font, 750 if same_line else 730)
         if english and not same_line:
-            _draw_centered_block(draw, _wrap(draw, english, english_font, 1650)[:3], english_font, 850)
+            english_y = 835 + (len(original_lines) - 1) * 72
+            _draw_centered_block(draw, _wrap(draw, english, english_font, 1650)[:2], english_font, english_y)
         path = os.path.join(frames_dir, f"frame_{index:04d}.jpg")
         frame.save(path, quality=92, optimize=True)
         entries += [f"file '{path.replace(os.sep, '/')}'", f"duration {end-start:.3f}"]

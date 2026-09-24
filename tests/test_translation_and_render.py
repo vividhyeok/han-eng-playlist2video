@@ -2,9 +2,14 @@ import os
 import tempfile
 import unittest
 
+from PIL import Image
+
 from app.lyrics.exception_policy import classify_lyrics, extract_protected_english
 from app.lyrics.translator_v2 import _repeat_groups, parse_lrc_and_translate
-from app.media.video_maker import _group_simultaneous_lyrics, _wrap_subtitle, _write_ass
+from app.media.video_maker import (
+    _crop_to_aspect, _group_simultaneous_lyrics, _wrap_subtitle, _write_ass,
+    prepare_base_frame,
+)
 
 
 class TranslationPolicyTests(unittest.TestCase):
@@ -33,6 +38,16 @@ class TranslationPolicyTests(unittest.TestCase):
 
 
 class SubtitleLayoutTests(unittest.TestCase):
+    def test_landscape_thumbnail_uses_center_square_without_stretching(self):
+        source = Image.new("RGB", (1600, 900), "red")
+        source.paste(Image.new("RGB", (900, 900), "blue"), (350, 0))
+        square = _crop_to_aspect(source, 1.0)
+        self.assertEqual(square.size, (900, 900))
+        self.assertEqual(square.getpixel((0, 450)), (0, 0, 255))
+        frame = prepare_base_frame(source)
+        self.assertEqual(frame.size, (1920, 1080))
+        self.assertEqual(frame.getpixel((960, 420))[:3], (0, 0, 255))
+
     def test_long_subtitle_wraps_to_two_lines(self):
         wrapped = _wrap_subtitle("긴 가사가 화면 밖으로 나가지 않도록 안전하게 두 줄로 나뉘어야 합니다", korean=True)
         self.assertLessEqual(len(wrapped.splitlines()), 2)
