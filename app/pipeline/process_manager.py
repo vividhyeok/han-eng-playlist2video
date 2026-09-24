@@ -62,6 +62,7 @@ class ProcessConfig:
     pretranslated_json_path: Optional[str] = None
     translation_hints: Optional[Dict[int, str]] = None
     resume_existing: bool = False
+    force_manual_sync: bool = False
 
 
 class ProcessManager:
@@ -277,6 +278,12 @@ class ProcessManager:
                 raise RuntimeError(
                     "가사 원문이 손상되어 번역을 중단했습니다. "
                     f"{integrity_problem} 가사를 다시 가져오거나 직접 붙여 넣어 주세요."
+                )
+
+            if config.force_manual_sync:
+                raise TimingReviewRequired(
+                    "선택한 곡의 수동 타이밍 매핑을 시작합니다.",
+                    lrc_path=lrc_path, audio_path=resolved_audio,
                 )
 
             if not lyrics_are_synced(lyric_text):

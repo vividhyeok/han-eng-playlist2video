@@ -153,7 +153,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         copy = QVBoxLayout()
         copy.setSpacing(3)
-        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.3.1")
+        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.4.0")
         eyebrow.setObjectName("eyebrow")
         copy.addWidget(eyebrow)
 
@@ -246,6 +246,11 @@ class PlaylistPipelineWindow(QMainWindow):
         self.start_queue_button = QPushButton("전체 렌더링 시작")
         self.start_queue_button.clicked.connect(self.start_batch_processing)
         action_row.addWidget(self.start_queue_button)
+
+        self.manual_sync_button = QPushButton("선택 곡 수동 타이밍")
+        self.manual_sync_button.clicked.connect(self.start_selected_manual_sync)
+        self.manual_sync_button.setObjectName("secondary")
+        action_row.addWidget(self.manual_sync_button)
 
         self.remove_selected_button = QPushButton("선택 항목 제외")
         self.remove_selected_button.clicked.connect(self.remove_selected_queue_item)
@@ -497,6 +502,22 @@ class PlaylistPipelineWindow(QMainWindow):
         self.ready_status_value.setText("대기열 렌더링 중...")
         self._start_next_queue_item()
 
+    def start_selected_manual_sync(self) -> None:
+        if self.worker is not None or self.import_worker is not None:
+            return
+        row = self.queue_list.currentRow()
+        if row < 0 or row >= len(self.queue_items):
+            QMessageBox.information(self, "곡 선택", "수동 타이밍을 맞출 곡을 먼저 선택하세요.")
+            return
+        self.processing_mode = "single_queue_item"
+        self.current_queue_index = row
+        self.current_queue_batch_name = self._build_queue_batch_name()
+        config = deepcopy(self.queue_items[row].config)
+        config.batch_name = self.current_queue_batch_name
+        config.force_manual_sync = True
+        self.append_progress_message(f"수동 타이밍 준비: {self.queue_items[row].label}")
+        self._start_worker(config)
+
     def _start_next_queue_item(self) -> None:
         if self.current_queue_index >= len(self.queue_items):
             self.processing_mode = None
@@ -545,6 +566,7 @@ class PlaylistPipelineWindow(QMainWindow):
             return
 
         self.processing_mode = None
+        self.current_queue_batch_name = None
         self.set_processing_state(False)
         self.ready_status_value.setText("준비됨")
 
@@ -575,6 +597,8 @@ class PlaylistPipelineWindow(QMainWindow):
             dialog = TranslationReviewDialog(
                 json_path=error.json_path,
                 issues=error.issues,
+                artist=self.queue_items[self.current_queue_index].config.artist,
+                title=self.queue_items[self.current_queue_index].config.title,
                 parent=self,
             )
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -726,6 +750,7 @@ class PlaylistPipelineWindow(QMainWindow):
             self.model_combo,
             self.analyze_button,
             self.start_queue_button,
+            self.manual_sync_button,
             self.remove_selected_button,
             self.clear_button,
             self.clean_button,
@@ -755,6 +780,11 @@ class PlaylistPipelineWindow(QMainWindow):
             and self.import_worker is None
         )
         self.remove_selected_button.setEnabled(
+            bool(self.queue_items)
+            and self.worker is None
+            and self.import_worker is None
+        )
+        self.manual_sync_button.setEnabled(
             bool(self.queue_items)
             and self.worker is None
             and self.import_worker is None

@@ -14,12 +14,47 @@ from app.media.video_maker import (
     _crop_to_aspect, _group_simultaneous_lyrics, _wrap_subtitle, _write_ass,
     prepare_base_frame,
 )
-from app.ui.translation_dialog import apply_manual_translations
+from app.ui.translation_dialog import (
+    apply_manual_translations, build_external_review_prompt,
+    parse_external_translation_json,
+)
 from app.pipeline.process_manager import ProcessConfig, ProcessManager
 from app.sources.genie_handler import lyrics_integrity_problem, lyrics_are_usable
 
 
 class TranslationPolicyTests(unittest.TestCase):
+    def test_external_translation_codeblock_parses_and_requires_all_indexes(self):
+        pasted = '''```json
+        {"translations":[{"index":2,"english":"Two"},{"index":7,"english":"Seven"}]}
+        ```'''
+        self.assertEqual(
+            parse_external_translation_json(pasted, {2, 7}),
+            {2: "Two", 7: "Seven"},
+        )
+        with self.assertRaisesRegex(ValueError, "빠진 index"):
+            parse_external_translation_json('{"2":"Two"}', {2, 7})
+
+    def test_external_prompt_contains_song_identity_context_and_schema(self):
+        handle, path = tempfile.mkstemp(suffix=".json")
+        os.close(handle)
+        try:
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump([
+                    {"original": "앞줄", "english": "Before"},
+                    {"original": "문제 구절", "english": "Draft"},
+                    {"original": "뒷줄", "english": "After"},
+                ], file, ensure_ascii=False)
+            prompt = build_external_review_prompt(
+                path, [{"index": 1, "source": "문제 구절", "translated": "Draft", "question": "뜻?"}],
+                "가수", "곡 제목",
+            )
+            self.assertIn("가수", prompt)
+            self.assertIn("곡 제목", prompt)
+            self.assertIn("nearby_context", prompt)
+            self.assertIn('"translations"', prompt)
+        finally:
+            os.remove(path)
+
     def test_encoding_damaged_lyrics_are_rejected_before_translation(self):
         damaged = "[00:12.00]���� �Ӹ� �� ���Ӻ�"
         self.assertFalse(lyrics_are_usable(damaged))
