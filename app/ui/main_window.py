@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QDialog,
@@ -157,7 +158,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         copy = QVBoxLayout()
         copy.setSpacing(3)
-        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.4.1")
+        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.5.0")
         eyebrow.setObjectName("eyebrow")
         copy.addWidget(eyebrow)
 
@@ -204,7 +205,7 @@ class PlaylistPipelineWindow(QMainWindow):
         form.addWidget(QLabel("가사 정책"), 1, 0)
         self.lyrics_policy_combo = QComboBox()
         self.lyrics_policy_combo.addItem(
-            "일반 가사: AI 초안 후 직접 싱크 확인",
+            "일반 가사 허용 · 직접 타이밍 입력",
             "allow_plain",
         )
         self.lyrics_policy_combo.addItem(
@@ -463,15 +464,11 @@ class PlaylistPipelineWindow(QMainWindow):
                 lyrics_mode=prepared_track.lyrics_mode,
             )
             self.queue_items.append(queue_item)
-            self.queue_list.addItem(
-                self._format_queue_text(queue_item)
-            )
+            self._add_queue_row(queue_item)
 
         for skipped_track in report.skipped_tracks:
             self.skipped_tracks.append(skipped_track)
-            self.skipped_list.addItem(
-                f"{skipped_track.source.label}\nReason: {skipped_track.reason}"
-            )
+            self._add_skipped_row(skipped_track)
 
         self._refresh_pipeline_state()
 
@@ -488,7 +485,7 @@ class PlaylistPipelineWindow(QMainWindow):
                     f"Playlist: {report.playlist_title}",
                     f"Queued: {len(self.queue_items)}",
                     f"Synced lyrics: {synced_count}",
-                    f"AI 자동 싱크 예정: {plain_count}",
+                    f"직접 타이밍 입력 필요: {plain_count}",
                     f"Skipped: {self.skipped_list.count()}",
                 ]
             ),
@@ -543,7 +540,7 @@ class PlaylistPipelineWindow(QMainWindow):
                 return
             queue_item = QueueItem(config=prepared.config, label=prepared.label, lyrics_mode="plain")
             self.queue_items.append(queue_item)
-            self.queue_list.addItem(self._format_queue_text(queue_item))
+            self._add_queue_row(queue_item)
             row = len(self.queue_items) - 1
             self.queue_list.setCurrentRow(row)
             self.skipped_tracks.pop(skipped_row)
@@ -625,7 +622,7 @@ class PlaylistPipelineWindow(QMainWindow):
                 queue_item = self.queue_items[self.current_queue_index]
                 queue_item.config.lrc_path = error.lrc_path
                 queue_item.lyrics_mode = "synced"
-                self.queue_list.item(self.current_queue_index).setText(self._format_queue_text(queue_item))
+                self._refresh_queue_row(self.current_queue_index)
                 self.append_progress_message("수동 싱크를 저장했습니다. 현재 곡을 다시 처리합니다.")
                 config = deepcopy(queue_item.config)
                 config.batch_name = self.current_queue_batch_name
@@ -845,8 +842,58 @@ class PlaylistPipelineWindow(QMainWindow):
         self._refresh_pipeline_state()
 
     def _format_queue_text(self, queue_item: QueueItem) -> str:
-        lyrics_label = "싱크 가사 확인됨" if queue_item.lyrics_mode == "synced" else "AI 초안 + 직접 싱크 확인 예정"
+        lyrics_label = "타이밍 등록됨" if queue_item.lyrics_mode == "synced" else "가사 등록됨 · 타이밍 입력 필요"
         return f"{queue_item.label}\n{lyrics_label}"
+
+    def _add_queue_row(self, queue_item: QueueItem) -> None:
+        item = QListWidgetItem()
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(8, 5, 5, 5)
+        label = QLabel(self._format_queue_text(queue_item))
+        label.setWordWrap(True)
+        layout.addWidget(label, stretch=1)
+        button = QPushButton("⏱ 타이밍")
+        button.setObjectName("secondary")
+        button.setToolTip("이 곡의 가사 타이밍을 직접 편집합니다")
+        button.clicked.connect(lambda _checked=False, row_item=item: self._start_queue_row_timing(row_item))
+        layout.addWidget(button)
+        item.setSizeHint(widget.sizeHint())
+        self.queue_list.addItem(item)
+        self.queue_list.setItemWidget(item, widget)
+
+    def _add_skipped_row(self, skipped_track: PlaylistSkippedTrack) -> None:
+        item = QListWidgetItem()
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(8, 5, 5, 5)
+        label = QLabel(f"{skipped_track.source.label}\n가사를 직접 등록할 수 있습니다")
+        label.setWordWrap(True)
+        layout.addWidget(label, stretch=1)
+        button = QPushButton("✎ 가사 등록")
+        button.setObjectName("secondary")
+        button.setToolTip("일반 가사를 붙여 넣고 수동 타이밍 작업을 시작합니다")
+        button.clicked.connect(lambda _checked=False, row_item=item: self._start_skipped_row_registration(row_item))
+        layout.addWidget(button)
+        item.setSizeHint(widget.sizeHint())
+        self.skipped_list.addItem(item)
+        self.skipped_list.setItemWidget(item, widget)
+
+    def _start_queue_row_timing(self, item: QListWidgetItem) -> None:
+        self.queue_list.setCurrentItem(item)
+        self.start_selected_manual_sync()
+
+    def _start_skipped_row_registration(self, item: QListWidgetItem) -> None:
+        self.skipped_list.setCurrentItem(item)
+        self.start_selected_manual_sync()
+
+    def _refresh_queue_row(self, row: int) -> None:
+        item = self.queue_list.item(row)
+        widget = self.queue_list.itemWidget(item) if item else None
+        if widget:
+            label = widget.findChild(QLabel)
+            if label:
+                label.setText(self._format_queue_text(self.queue_items[row]))
 
     def _capture_worker_result(self, output_path: str) -> None:
         self.worker_result_path = output_path

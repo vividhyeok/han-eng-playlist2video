@@ -14,7 +14,6 @@ from typing import Callable, Dict, Literal, Optional
 from app.config.paths import AUDIO_CACHE_DIR, LEGACY_LYRICS_DIR, LYRICS_DIR, OUTPUT_DIR, TEMP_DIR, ensure_data_dirs
 from app.export.premiere_exporter import export_premiere_xml
 from app.lyrics.ai_models import has_openai_api_key
-from app.lyrics.auto_sync import auto_sync_plain_lyrics
 from app.lyrics.exception_policy import assess_timing, classify_lyrics
 from app.lyrics.translator_v2 import get_translation_review_issues, parse_lrc_and_translate, parse_lyrics_for_review
 from app.media.video_maker import get_audio_duration, make_lyric_video
@@ -287,28 +286,9 @@ class ProcessManager:
                 )
 
             if not lyrics_are_synced(lyric_text):
-                if not has_openai_api_key():
-                    raise TimingReviewRequired(
-                        "일반 가사에는 타임코드가 필요합니다. API 키를 설정하거나 수동 싱크로 맞춰 주세요.",
-                        lrc_path=lrc_path, audio_path=resolved_audio,
-                    )
-                self.update_progress("AI 싱크 초안 생성", 48)
-                try:
-                    sync_result = await auto_sync_plain_lyrics(
-                        lrc_path=lrc_path, audio_path=resolved_audio,
-                        artist=config.artist, title=config.title,
-                    )
-                except Exception as exc:
-                    raise TimingReviewRequired(
-                        f"AI 싱크 초안을 만들지 못했습니다. 수동 탭 싱크로 맞춰 주세요. ({exc})",
-                        lrc_path=lrc_path, audio_path=resolved_audio,
-                    ) from exc
-                score = int(round(sync_result.confidence * 100))
                 raise TimingReviewRequired(
-                    f"AI 싱크 초안을 만들었습니다. 직접 재생하며 확인해 주세요. "
-                    f"신뢰도 {score}%, 확인 권장 {len(sync_result.low_confidence_indexes)}줄",
-                    lrc_path=lrc_path, audio_path=resolved_audio, score=score,
-                    low_indexes=sync_result.low_confidence_indexes,
+                    "일반 가사가 등록되었습니다. 직접 재생하며 각 줄의 시작 시간을 지정해 주세요.",
+                    lrc_path=lrc_path, audio_path=resolved_audio,
                 )
 
             if os.path.abspath(lrc_path) != os.path.abspath(copied_lrc_path):

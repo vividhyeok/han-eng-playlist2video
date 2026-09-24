@@ -109,8 +109,7 @@ class WorkbenchState:
                     "translation": "GPT-5.6 Luna",
                     "difficult_translation": "GPT-5.6 Terra",
                     "final_ambiguity": "GPT-5.6 Sol",
-                    "auto_sync_transcription": "GPT-Transcribe",
-                    "auto_sync_alignment": "GPT-5.6 Luna",
+                    "timing": "Manual timing editor",
                 },
                 "output_dir": OUTPUT_DIR,
             }

@@ -156,7 +156,7 @@ class StructuredTranslationTests(unittest.IsolatedAsyncioTestCase):
     def test_repeated_hooks_are_grouped(self):
         self.assertEqual(_repeat_groups(["가자", "verse", "가자"]), [[0, 2]])
 
-    def test_plain_lyrics_cannot_bypass_auto_sync(self):
+    def test_plain_lyrics_require_manual_timing(self):
         import asyncio
 
         handle, path = tempfile.mkstemp(suffix=".lrc")
@@ -165,7 +165,7 @@ class StructuredTranslationTests(unittest.IsolatedAsyncioTestCase):
         try:
             with open(path, "w", encoding="utf-8") as file:
                 file.write("첫 번째 줄\n두 번째 줄\n")
-            with self.assertRaisesRegex(ValueError, "AI 자동 싱크"):
+            with self.assertRaisesRegex(ValueError, "수동 타이밍"):
                 asyncio.run(parse_lrc_and_translate(path, output, duration=120))
         finally:
             os.remove(path)

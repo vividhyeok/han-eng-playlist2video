@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from PyQt6.QtCore import QTimer, QUrl, Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
     QMessageBox, QPushButton, QSlider, QTextEdit, QVBoxLayout)
@@ -122,6 +123,24 @@ class ManualSyncDialog(QDialog):
         self.player.positionChanged.connect(self._position_changed)
         self.player.playbackStateChanged.connect(self._playback_changed)
         self.timer = QTimer(self); self.timer.timeout.connect(self._refresh_position); self.timer.start(100)
+        self.shortcuts = []
+        for sequence, callback in (
+            ("Space", self.tap_current),
+            ("Ctrl+Space", self.toggle_playback),
+            ("Up", lambda: self.move_line(-1)),
+            ("Down", lambda: self.move_line(1)),
+            ("Left", lambda: self.nudge_current(-0.1)),
+            ("Right", lambda: self.nudge_current(0.1)),
+            ("Shift+Left", lambda: self.seek_relative(-5000)),
+            ("Shift+Right", lambda: self.seek_relative(5000)),
+            ("Backspace", self.undo_previous),
+            ("Return", self.seek_to_current_line),
+        ):
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(callback)
+            self.shortcuts.append(shortcut)
         self._refresh_lines()
 
     def toggle_playback(self):
@@ -194,20 +213,6 @@ class ManualSyncDialog(QDialog):
         with open(self.lrc_path, "w", encoding="utf-8") as file:
             for point in self.points: file.write(f"[{_format_time(float(point['time']))}] {point['text']}\n")
         self.player.stop(); self.accept()
-
-    def keyPressEvent(self, event):  # noqa: N802
-        key, mods = event.key(), event.modifiers()
-        if key == Qt.Key.Key_Space and mods & Qt.KeyboardModifier.ControlModifier: self.toggle_playback()
-        elif key == Qt.Key.Key_Space: self.tap_current()
-        elif key == Qt.Key.Key_Up: self.move_line(-1)
-        elif key == Qt.Key.Key_Down: self.move_line(1)
-        elif key == Qt.Key.Key_Left and mods & Qt.KeyboardModifier.ShiftModifier: self.seek_relative(-5000)
-        elif key == Qt.Key.Key_Right and mods & Qt.KeyboardModifier.ShiftModifier: self.seek_relative(5000)
-        elif key == Qt.Key.Key_Left: self.nudge_current(-0.1)
-        elif key == Qt.Key.Key_Right: self.nudge_current(0.1)
-        elif key == Qt.Key.Key_Backspace: self.undo_previous()
-        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter): self.seek_to_current_line()
-        else: super().keyPressEvent(event)
 
     def closeEvent(self, event):  # noqa: N802
         self.player.stop(); super().closeEvent(event)
