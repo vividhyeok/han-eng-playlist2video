@@ -1,31 +1,26 @@
-"""OpenAI model registry for lyric translation."""
+"""OpenAI model choices for lyric translation."""
 from __future__ import annotations
 
 import os
 from typing import Dict
 
-DEFAULT_TRANSLATION_MODEL = "gpt-5.6-luna"
-REVIEW_TRANSLATION_MODEL = "gpt-5.6-terra"
+DEFAULT_TRANSLATION_MODEL = "gpt-5.6-terra"
+REVIEW_TRANSLATION_MODEL = "gpt-5.6-sol"
 
 OPENAI_MODELS: Dict[str, str] = {
-    "gpt-5.6-luna": "GPT-5.6 Luna · recommended / high-volume",
-    "gpt-5.6-terra": "GPT-5.6 Terra · higher quality",
-    "gpt-5.6-sol": "GPT-5.6 Sol · maximum quality",
+    "gpt-5.6-terra": "GPT-5.6 Terra · 권장 (품질/속도 균형)",
+    "gpt-5.6-luna": "GPT-5.6 Luna · 빠른 대량 처리",
+    "gpt-5.6-sol": "GPT-5.6 Sol · 최고 품질",
 }
 
 LEGACY_MODEL_ALIASES = {
-    "gpt-5.4-mini": DEFAULT_TRANSLATION_MODEL,
-    "gpt-5.4-nano": DEFAULT_TRANSLATION_MODEL,
-    "gpt-4o": DEFAULT_TRANSLATION_MODEL,
-    "gpt-4o-mini": DEFAULT_TRANSLATION_MODEL,
-    "gpt-4-turbo": DEFAULT_TRANSLATION_MODEL,
-    "gpt-4.1": DEFAULT_TRANSLATION_MODEL,
-    "gpt-4.1-mini": DEFAULT_TRANSLATION_MODEL,
-    "deepseek-chat": DEFAULT_TRANSLATION_MODEL,
-    "gemini-2.0-flash": DEFAULT_TRANSLATION_MODEL,
-    "gemini-2.0-flash-lite": DEFAULT_TRANSLATION_MODEL,
-    "gemini-1.5-pro": DEFAULT_TRANSLATION_MODEL,
-    "gemini-pro": DEFAULT_TRANSLATION_MODEL,
+    model: DEFAULT_TRANSLATION_MODEL
+    for model in (
+        "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o", "gpt-4o-mini",
+        "gpt-4-turbo", "gpt-4.1", "gpt-4.1-mini", "deepseek-chat",
+        "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro",
+        "gemini-pro",
+    )
 }
 
 

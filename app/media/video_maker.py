@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import textwrap
 from typing import List, Optional, Sequence
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -113,12 +114,47 @@ def _ass_escape(text: str) -> str:
 
 
 def _font_override(text: str, base_size: int, *, korean: bool) -> str:
-    length = len(text.strip())
+    length = max((len(line) for line in text.split(r"\N")), default=0)
     if korean:
         size = base_size if length <= 30 else 54 if length <= 45 else 48 if length <= 62 else 42
     else:
         size = base_size if length <= 60 else 50 if length <= 82 else 46 if length <= 110 else 40
     return f"{{\\fs{size}}}"
+
+
+def _wrap_subtitle(text: str, *, korean: bool, max_lines: int = 2) -> str:
+    """Wrap ASS text predictably without adding per-frame rendering work."""
+    clean = " ".join(str(text or "").replace("\r", " ").replace("\n", " ").split())
+    if not clean:
+        return ""
+    width = 30 if korean else 52
+    lines = textwrap.wrap(
+        clean,
+        width=width,
+        break_long_words=True,
+        break_on_hyphens=False,
+        replace_whitespace=True,
+    )
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        remainder = clean[len(" ".join(lines[:-1])):].strip() if max_lines > 1 else clean
+        lines[-1] = textwrap.shorten(remainder, width=width, placeholder="…")
+    return "\n".join(lines)
+
+
+def _group_simultaneous_lyrics(lyrics: List[dict]) -> List[dict]:
+    """Merge equal timestamps so ASS events never paint on top of one another."""
+    grouped: List[dict] = []
+    for item in sorted(lyrics, key=lambda row: float(row.get("start_time", 0.0))):
+        start = float(item.get("start_time", 0.0))
+        if grouped and abs(float(grouped[-1]["start_time"]) - start) < 0.01:
+            for key in ("original", "english"):
+                value = str(item.get(key, "")).strip()
+                if value:
+                    grouped[-1][key] = f"{grouped[-1].get(key, '')} {value}".strip()
+        else:
+            grouped.append({**item, "start_time": start})
+    return grouped
 
 
 def _write_ass(lyrics: List[dict], duration: float, ass_path: str) -> None:
@@ -138,17 +174,19 @@ Style: English,Malgun Gothic,55,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     events: List[str] = []
-    ordered = sorted(lyrics, key=lambda item: float(item.get("start_time", 0.0)))
+    ordered = _group_simultaneous_lyrics(lyrics)
     for index, item in enumerate(ordered):
         start = float(item.get("start_time", 0.0))
         end = float(ordered[index + 1].get("start_time", duration)) if index < len(ordered) - 1 else duration
         end = max(start + 0.12, min(end, duration))
-        original = _ass_escape(item.get("original", ""))
-        english = _ass_escape(item.get("english", ""))
+        raw_original = str(item.get("original", ""))
+        raw_english = str(item.get("english", ""))
+        original = _ass_escape(_wrap_subtitle(raw_original, korean=True))
+        english = _ass_escape(_wrap_subtitle(raw_english, korean=False))
         # English-only tracks intentionally avoid duplicating the same line twice.
-        same_line = original.casefold().strip() == english.casefold().strip()
+        same_line = raw_original.casefold().strip() == raw_english.casefold().strip()
         if original:
-            y = 790 if same_line else 710
+            y = 785 if same_line else 690
             events.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Original,,0,0,0,,"
                 f"{{\\an8\\pos(960,{y})\\q2}}{_font_override(original, 60, korean=True)}{original}"
@@ -156,7 +194,7 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         if english and not same_line:
             events.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},English,,0,0,0,,"
-                f"{{\\an8\\pos(960,855)\\q2}}{_font_override(english, 55, korean=False)}{english}"
+                f"{{\\an8\\pos(960,865)\\q2}}{_font_override(english, 55, korean=False)}{english}"
             )
     with open(ass_path, "w", encoding="utf-8-sig") as file:
         file.write(header + "\n".join(events) + "\n")
@@ -269,7 +307,7 @@ def _render_fallback(audio_path: str, base: Image.Image, lyrics: List[dict], out
     concat_path = os.path.join(frames_dir, "concat.txt")
     entries: List[str] = []
     current = 0.0
-    ordered = sorted(lyrics, key=lambda item: float(item.get("start_time", 0.0)))
+    ordered = _group_simultaneous_lyrics(lyrics)
     for index, lyric in enumerate(ordered):
         start = float(lyric.get("start_time", 0.0))
         if start > current:

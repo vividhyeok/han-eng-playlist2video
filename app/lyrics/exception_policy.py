@@ -1,9 +1,4 @@
-"""Batch-safe lyric classification and timing quality checks.
-
-The goal is to turn unusual tracks into explicit policies instead of hard failures:
-English-only lyrics skip translation, missing lyrics may render as lyricless, mixed
-Korean/English lyrics preserve existing English, and suspicious timing is routed to review.
-"""
+"""Batch-safe language and lyric-timing quality policies."""
 from __future__ import annotations
 
 import re
@@ -38,29 +33,28 @@ class TimingQA:
 def classify_lyrics(lines: Sequence[str], *, title: str = "") -> LyricPolicy:
     cleaned = [str(line or "").strip() for line in lines if str(line or "").strip()]
     if not cleaned:
-        reason = "가사를 찾지 못했습니다. 앨범아트+음원만으로 렌더링합니다."
+        reason = "가사를 찾지 못해 앨범 아트와 음원만으로 렌더링합니다."
         if INSTRUMENTAL_HINT.search(title or ""):
-            reason = "instrumental/interlude 계열로 판단되어 가사 없이 렌더링합니다."
+            reason = "연주곡으로 판단되어 가사 없이 렌더링합니다."
         return LyricPolicy("lyricless", False, True, reason)
 
     korean_chars = sum(len(HANGUL.findall(line)) for line in cleaned)
     latin_chars = sum(len(LATIN.findall(line)) for line in cleaned)
     if korean_chars == 0 and latin_chars > 0:
-        return LyricPolicy("english", False, False, "영어-only 가사: 번역 API를 호출하지 않습니다.")
+        return LyricPolicy("english", False, False, "영어 가사는 번역 API를 호출하지 않습니다.")
     if korean_chars > 0 and latin_chars > 0:
-        return LyricPolicy("mixed", True, False, "한영 혼용: 기존 영어 표현을 보존하며 한국어 부분만 해석합니다.")
+        return LyricPolicy("mixed", True, False, "한영 혼용 가사의 기존 영어 표현을 보존합니다.")
     if korean_chars > 0:
         return LyricPolicy("korean", True, False)
-    return LyricPolicy("other", False, False, "번역 대상 언어가 아니므로 원문만 표시합니다.")
+    return LyricPolicy("other", False, False, "번역 대상 언어가 아니므로 원문을 유지합니다.")
 
 
 def extract_protected_english(text: str) -> List[str]:
-    """Return English-ish tokens that should survive a mixed-language translation.
-
-    Single-letter articles are ignored, while abbreviations, brands, slang, numbers joined
-    to Latin tokens, and apostrophe forms are kept.
-    """
-    tokens = re.findall(r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*(?:['’][A-Za-z]+)?(?:[-+&.][A-Za-z0-9]+)*(?![A-Za-z0-9])", text or "")
+    tokens = re.findall(
+        r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*(?:['’][A-Za-z]+)?"
+        r"(?:[-+&.][A-Za-z0-9]+)*(?![A-Za-z0-9])",
+        text or "",
+    )
     ignored = {"a", "an", "the", "i"}
     result: List[str] = []
     for token in tokens:
@@ -100,21 +94,16 @@ def assess_timing(entries: Iterable[dict[str, Any]], duration: float) -> TimingQ
     times = [float(row.get("start_time", 0.0) or 0.0) for row in rows]
     reasons: List[str] = []
     score = 100
-
-    if any(times[i] > times[i + 1] for i in range(len(times) - 1)):
+    if any(a > b for a, b in zip(times, times[1:])):
         reasons.append("타임코드 역전")
         score -= 45
-
-    duplicate_or_tiny = sum(1 for a, b in zip(times, times[1:]) if b - a < 0.18)
-    if len(times) > 5 and duplicate_or_tiny / max(1, len(times) - 1) > 0.12:
-        reasons.append("지나치게 촘촘하거나 중복된 타임코드")
+    tiny = sum(1 for a, b in zip(times, times[1:]) if b - a < 0.18)
+    if len(times) > 5 and tiny / max(1, len(times) - 1) > 0.12:
+        reasons.append("지나치게 짧거나 중복된 타임코드")
         score -= 25
-
-    huge_gaps = [b - a for a, b in zip(times, times[1:]) if b - a > 25]
-    if len(huge_gaps) >= 2:
-        reasons.append("긴 무자막 구간이 반복됨")
+    if sum(1 for a, b in zip(times, times[1:]) if b - a > 25) >= 2:
+        reasons.append("긴 무가사 구간 반복")
         score -= 12
-
     if duration > 0:
         if times[-1] > duration + 2.0:
             reasons.append("마지막 가사가 음원 길이를 초과")
@@ -125,7 +114,6 @@ def assess_timing(entries: Iterable[dict[str, Any]], duration: float) -> TimingQ
         if times[0] > min(45.0, duration * 0.35) and len(times) >= 8:
             reasons.append("첫 가사 시작이 비정상적으로 늦음")
             score -= 10
-
     score = max(0, min(100, score))
     return TimingQA(score < 75, score, tuple(reasons))
 

@@ -1,13 +1,12 @@
-name: Windows build
+name: Windows desktop release
 
 on:
   push:
-    branches:
-      - main
-      - feat/local-web-batch-workbench
+    branches: [main]
+    tags: ["v*"]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,74 +15,54 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 35
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-
-      - name: Compile Python sources
-        run: python -m compileall -q app main.py legacy_gui.py
-
-      - name: Import web application
+      - name: Validate desktop startup
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m compileall -q app main.py
+          python -c "from PyQt6.QtWidgets import QApplication; from app.ui.main_window import MainWindow; app=QApplication([]); window=MainWindow(); assert window.windowTitle() == 'Lyric Video Maker'; print('desktop startup ok')"
+      - name: Build standalone app
         shell: pwsh
         run: |
-          python -c "import app.web.server; import app.lyrics.translator_v2; import app.lyrics.auto_sync; import app.lyrics.exception_policy; print('imports ok')"
-
-      - name: Build standalone EXE
-        shell: pwsh
-        run: |
-          pyinstaller --noconfirm --clean --onefile --name LyricVideoMaker `
-            --add-data "app/web/static;app/web/static" `
+          pyinstaller --noconfirm --clean --onefile --windowed --name LyricVideoMaker `
             --add-binary "bin/ffmpeg/bin/ffmpeg.exe;bin/ffmpeg/bin" `
             --add-binary "bin/ffmpeg/bin/ffprobe.exe;bin/ffmpeg/bin" `
             --collect-all genieapi `
             --collect-all yt_dlp `
             main.py
-
-      - name: Verify EXE exists
+      - name: Smoke-test packaged app
         shell: pwsh
         run: |
           if (-not (Test-Path "dist/LyricVideoMaker.exe")) { throw "EXE was not created" }
-          Get-Item "dist/LyricVideoMaker.exe" | Format-List Name,Length,LastWriteTime
-
-      - name: Smoke-test packaged EXE
-        shell: pwsh
-        run: |
-          $p = Start-Process -FilePath "dist/LyricVideoMaker.exe" -PassThru
-          Start-Sleep -Seconds 6
-          if ($p.HasExited) { throw "Packaged EXE exited during startup smoke test with code $($p.ExitCode)" }
-          Stop-Process -Id $p.Id -Force
-
-      - name: Upload EXE artifact
-        uses: actions/upload-artifact@v4
+          $process = Start-Process -FilePath "dist/LyricVideoMaker.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) { throw "Packaged app exited during startup with code $($process.ExitCode)" }
+          Stop-Process -Id $process.Id -Force
+      - uses: actions/upload-artifact@v4
         with:
           name: LyricVideoMaker-Windows
           path: dist/LyricVideoMaker.exe
           if-no-files-found: error
-
-      - name: Publish downloadable release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v2.0.0"
-          $asset = "dist/LyricVideoMaker.exe"
-          if (gh release view $tag 2>$null) {
-            gh release upload $tag $asset --clobber
-          } else {
-            gh release create $tag $asset --target "${{ github.sha }}" --title "Lyric Video Maker v2.0.0" --notes "Local web workbench release. Download LyricVideoMaker.exe, run it, enter your OpenAI API key in Settings, then paste a song or playlist URL."
-          }
+          gh release create "${{ github.ref_name }}" "dist/LyricVideoMaker.exe#LyricVideoMaker-Windows.exe" `
+            --target "${{ github.sha }}" `
+            --title "Lyric Video Maker ${{ github.ref_name }}" `
+            --generate-notes

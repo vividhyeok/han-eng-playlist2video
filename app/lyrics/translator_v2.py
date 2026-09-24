@@ -10,6 +10,7 @@ Pipeline:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -37,11 +38,12 @@ except ImportError:  # pragma: no cover
 HANGUL_PATTERN = re.compile(r"[\uac00-\ud7a3]")
 TIMESTAMP_PATTERN = re.compile(r"\[(\d{1,2}:\d{2}(?:[.:]\d{1,3})?)\]")
 METADATA_PATTERN = re.compile(r"^\[(ar|ti|al|by|offset|length):.*\]$", re.IGNORECASE)
-PROMPT_VERSION = "kr-rap-context-escalation-v6"
-CACHE_VERSION = 6
+PROMPT_VERSION = "kr-rap-context-escalation-v7"
+CACHE_VERSION = 7
 BASE_MODEL = DEFAULT_TRANSLATION_MODEL
 REVIEW_MODEL = REVIEW_TRANSLATION_MODEL
 FINAL_MODEL = "gpt-5.6-sol"
+MAX_LINES_PER_REQUEST = 48
 
 if BaseModel is not None:
     class TranslationLine(BaseModel):
@@ -140,6 +142,22 @@ def _repeat_groups(lines: Sequence[str]) -> List[List[int]]:
 
 
 def _instructions(stage: str) -> str:
+    stage_goal = {
+        "base": "Translate ordinary lines confidently; flag only meaning-changing ambiguity.",
+        "review": "Recheck difficult lines using the nearby bars and Korean hip-hop usage.",
+        "final": "Make the best defensible choice; ask only if two materially different meanings remain.",
+    }.get(stage, "")
+    return f"""You are a Korean-to-English subtitle translator specializing in Korean hip-hop, rap, R&B, and indie lyrics.
+
+Reconstruct meaning from adjacent bars before translating. Handle omitted subjects, inverted syntax, fragments spanning lines, phonetic spelling, wordplay, slang, flex language, cultural references, profanity, irony, and code-switching. Preserve the artist's register and emotional force; do not sanitize. Translate pragmatic meaning rather than dictionary surface meaning, but never invent a specific referent unsupported by context.
+
+Keep protected English words, names, crews, labels, brands, neighborhoods, ad-libs, and rhyme anchors intact. Copy fully English lines unchanged. Identical hooks must use identical wording. Keep each English subtitle concise and natural enough to read on screen.
+
+Return every requested index exactly once without merging, splitting, omitting, or reordering. `translated` must contain English only. Set `confidence` from 0 to 1. Set `needs_review=true` only when unresolved ambiguity would materially change the translation; still provide the best provisional translation and one short Korean question in `ambiguity_question`. Do not flag harmless stylistic alternatives.
+
+Stage goal: {stage_goal}
+"""
+
     strictness = {
         "base": "Translate confidently when ordinary song context resolves the meaning. Flag only genuinely material ambiguity.",
         "review": "Re-examine only the supplied difficult lines very carefully. Prefer contextual Korean-rap usage over literal dictionary readings.",
@@ -263,6 +281,7 @@ async def _request_translation(
         instructions=_instructions(stage),
         input=json.dumps(payload, ensure_ascii=False),
         text_format=TranslationPayload,
+        reasoning={"effort": "low" if stage == "base" else "medium"},
         max_output_tokens=max(2048, min(16384, 220 * max(1, len(indexes)))),
     )
     parsed = response.output_parsed
@@ -312,21 +331,39 @@ async def translate_lyrics_detailed(
             return [str(item) for item in output], issues, {int(k): v for k, v in meta.items()}
 
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    target_indexes = [i for i, line in enumerate(lyrics) if line.strip()]
+    # Translate one representative per identical hook. Repeated choruses are copied
+    # back later, reducing cost while guaranteeing consistent wording.
+    seen_lines: set[str] = set()
+    target_indexes: List[int] = []
+    for index, line in enumerate(lyrics):
+        repeat_key = _normalize_repeat_key(line)
+        if not repeat_key or repeat_key in seen_lines:
+            continue
+        seen_lines.add(repeat_key)
+        target_indexes.append(index)
     last_error: Optional[Exception] = None
     base: Dict[int, dict[str, Any]] = {}
-    for attempt in range(3):
-        try:
-            base = await _request_translation(
-                client, model=BASE_MODEL, stage="base", artist=artist, title=title,
-                lyrics=lyrics, indexes=target_indexes, human_hints=human_hints,
-            )
-            break
-        except Exception as exc:
-            last_error = exc
-            print(f"[WARN] Base translation attempt {attempt + 1} failed: {exc}")
-    if not base:
-        raise RuntimeError(f"Base lyric translation failed: {last_error}")
+    batches = [
+        target_indexes[start:start + MAX_LINES_PER_REQUEST]
+        for start in range(0, len(target_indexes), MAX_LINES_PER_REQUEST)
+    ]
+    for batch_number, indexes in enumerate(batches, start=1):
+        translated_batch: Dict[int, dict[str, Any]] = {}
+        for attempt in range(3):
+            try:
+                translated_batch = await _request_translation(
+                    client, model=BASE_MODEL, stage="base", artist=artist, title=title,
+                    lyrics=lyrics, indexes=indexes, human_hints=human_hints,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                print(f"[WARN] Base batch {batch_number} attempt {attempt + 1} failed: {exc}")
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (2 ** attempt))
+        if not translated_batch:
+            raise RuntimeError(f"Base lyric translation failed: {last_error}")
+        base.update(translated_batch)
 
     difficult = [
         i for i in target_indexes

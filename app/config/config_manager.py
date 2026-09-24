@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 from app.config.paths import CONFIG_FILE_PATH, ensure_data_dirs
 
 DEFAULT_CONFIG = {
-    "translation_model": "gpt-5.4-mini",
+    "translation_model": "gpt-5.6-terra",
     "last_input": "",
     "playlist_lyrics_policy": "allow_plain",
     "output_mode": "video",

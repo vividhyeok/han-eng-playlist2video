@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -18,7 +19,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.config.config_manager import get_config
-from app.config.paths import TEMP_DIR, TRANSLATION_CACHE_PATH, ensure_data_dirs
+from app.config.paths import BASE_DIR, OUTPUT_DIR, TEMP_DIR, TRANSLATION_CACHE_PATH, ensure_data_dirs
 from app.lyrics.ai_models import OPENAI_MODELS, resolve_model
 from app.pipeline.playlist_importer import PlaylistImportReport, import_playlist
 from app.pipeline.process_manager import ProcessConfig, ProcessManager
@@ -100,8 +100,9 @@ class PlaylistPipelineWindow(QMainWindow):
         super().__init__()
         ensure_data_dirs()
 
-        self.setWindowTitle("Playlist Lyric Video Pipeline")
-        self.setMinimumSize(1360, 920)
+        self.setWindowTitle("Lyric Video Maker")
+        self.setMinimumSize(1120, 760)
+        self.resize(1280, 850)
         self.setStyleSheet(MODERN_STYLESHEET)
 
         self.config_manager = get_config()
@@ -124,46 +125,58 @@ class PlaylistPipelineWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         central = QWidget()
+        central.setObjectName("appRoot")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(18)
+        root.setContentsMargins(22, 20, 22, 20)
+        root.setSpacing(12)
 
         root.addWidget(self._build_header_card())
         root.addWidget(self._build_setup_card())
-        root.addWidget(self._build_summary_card())
-
         splitter = QSplitter()
         splitter.addWidget(self._build_queue_card())
         splitter.addWidget(self._build_skipped_card())
         splitter.setSizes([760, 540])
-        root.addWidget(splitter, stretch=1)
-
-        root.addWidget(self._build_progress_card(), stretch=1)
+        root.addWidget(splitter, stretch=3)
+        root.addWidget(self._build_progress_card(), stretch=2)
 
     def _build_header_card(self) -> QWidget:
         frame = QFrame()
-        frame.setObjectName("card")
-        layout = QVBoxLayout(frame)
+        frame.setObjectName("hero")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(20, 15, 20, 15)
 
-        title = QLabel("Playlist Lyric Video Pipeline")
+        copy = QVBoxLayout()
+        copy.setSpacing(3)
+        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.1")
+        eyebrow.setObjectName("eyebrow")
+        copy.addWidget(eyebrow)
+
+        title = QLabel("Lyric Video Maker")
         title.setObjectName("title")
-        layout.addWidget(title)
+        copy.addWidget(title)
 
         note = QLabel(
-            "Analyze a YouTube or YouTube Music playlist, build the render queue automatically, "
-            "then run the batch in one pass."
+            "플레이리스트를 분석하고, 한글·영문 가사 영상을 한 번에 렌더링하세요."
         )
         note.setWordWrap(True)
-        layout.addWidget(note)
+        note.setObjectName("hint")
+        copy.addWidget(note)
+        layout.addLayout(copy, stretch=1)
+
+        self.ready_status_value = QLabel("준비됨")
+        self.ready_status_value.setObjectName("statusReady")
+        layout.addWidget(self.ready_status_value)
         return frame
 
     def _build_setup_card(self) -> QWidget:
         frame = QFrame()
         frame.setObjectName("card")
         layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 15, 18, 16)
+        layout.setSpacing(10)
 
-        header = QLabel("Pipeline Setup")
+        header = QLabel("1  플레이리스트 설정")
         header.setObjectName("subtitle")
         layout.addWidget(header)
 
@@ -171,7 +184,7 @@ class PlaylistPipelineWindow(QMainWindow):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(12)
 
-        form.addWidget(QLabel("Playlist URL"), 0, 0)
+        form.addWidget(QLabel("플레이리스트 URL"), 0, 0)
         self.playlist_url_input = QLineEdit()
         self.playlist_url_input.setPlaceholderText(
             "https://music.youtube.com/playlist?list=... or https://www.youtube.com/playlist?list=..."
@@ -179,94 +192,78 @@ class PlaylistPipelineWindow(QMainWindow):
         self.playlist_url_input.textChanged.connect(self._persist_playlist_settings)
         form.addWidget(self.playlist_url_input, 0, 1, 1, 3)
 
-        form.addWidget(QLabel("Lyrics policy"), 1, 0)
+        form.addWidget(QLabel("가사 정책"), 1, 0)
         self.lyrics_policy_combo = QComboBox()
         self.lyrics_policy_combo.addItem(
-            "Allow plain lyrics if synced lyrics are missing",
+            "싱크 가사가 없으면 일반 가사 허용",
             "allow_plain",
         )
         self.lyrics_policy_combo.addItem(
-            "Queue only tracks with synced lyrics",
+            "싱크 가사가 있는 곡만 처리",
             "require_synced",
         )
         self.lyrics_policy_combo.currentIndexChanged.connect(self._persist_playlist_settings)
         form.addWidget(self.lyrics_policy_combo, 1, 1)
 
-        form.addWidget(QLabel("Output mode"), 1, 2)
+        form.addWidget(QLabel("출력 형식"), 1, 2)
         self.output_mode_combo = QComboBox()
-        self.output_mode_combo.addItem("Video", "video")
+        self.output_mode_combo.addItem("MP4 영상", "video")
         self.output_mode_combo.addItem("Premiere XML", "premiere_xml")
         self.output_mode_combo.currentIndexChanged.connect(self.on_output_mode_changed)
         form.addWidget(self.output_mode_combo, 1, 3)
 
-        form.addWidget(QLabel("Translation model"), 2, 0)
+        form.addWidget(QLabel("번역 모델"), 2, 0)
         self.model_combo = QComboBox()
         for model_id, label in OPENAI_MODELS.items():
             self.model_combo.addItem(label, model_id)
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
         form.addWidget(self.model_combo, 2, 1)
 
-        self.api_key_status = QLabel("")
-        self.api_key_status.setObjectName("hint")
-        self.api_key_status.setWordWrap(True)
-        form.addWidget(self.api_key_status, 2, 2, 1, 2)
+        form.addWidget(QLabel("OpenAI API 키"), 2, 2)
+        key_row = QHBoxLayout()
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_input.setPlaceholderText("설정됨 · 변경할 때만 입력" if os.getenv("OPENAI_API_KEY") else "sk-...")
+        key_row.addWidget(self.api_key_input, stretch=1)
+        self.save_key_button = QPushButton("저장")
+        self.save_key_button.setObjectName("secondary")
+        self.save_key_button.clicked.connect(self.save_api_key)
+        key_row.addWidget(self.save_key_button)
+        form.addLayout(key_row, 2, 3)
 
         layout.addLayout(form)
 
         action_row = QHBoxLayout()
-        self.analyze_button = QPushButton("Analyze Playlist")
+        self.analyze_button = QPushButton("플레이리스트 분석")
         self.analyze_button.clicked.connect(self.start_playlist_import)
         action_row.addWidget(self.analyze_button)
 
-        self.start_queue_button = QPushButton("Start Batch Render")
+        self.start_queue_button = QPushButton("전체 렌더링 시작")
         self.start_queue_button.clicked.connect(self.start_batch_processing)
         action_row.addWidget(self.start_queue_button)
 
-        self.remove_selected_button = QPushButton("Remove Selected")
+        self.remove_selected_button = QPushButton("선택 항목 제외")
         self.remove_selected_button.clicked.connect(self.remove_selected_queue_item)
         self.remove_selected_button.setObjectName("secondary")
         action_row.addWidget(self.remove_selected_button)
 
-        self.clear_button = QPushButton("Clear Analysis")
+        self.clear_button = QPushButton("분석 초기화")
         self.clear_button.clicked.connect(self.clear_analysis)
         self.clear_button.setObjectName("danger")
         action_row.addWidget(self.clear_button)
 
-        self.clean_button = QPushButton("Clean Temp Files")
+        self.clean_button = QPushButton("캐시 정리")
         self.clean_button.clicked.connect(self.clean_temp_files)
         self.clean_button.setObjectName("secondary")
         action_row.addWidget(self.clean_button)
 
+        self.open_output_button = QPushButton("결과 폴더 열기")
+        self.open_output_button.clicked.connect(self.open_output_folder)
+        self.open_output_button.setObjectName("secondary")
+        action_row.addWidget(self.open_output_button)
+
         action_row.addStretch()
         layout.addLayout(action_row)
-        return frame
-
-    def _build_summary_card(self) -> QWidget:
-        frame = QFrame()
-        frame.setObjectName("card")
-        layout = QGridLayout(frame)
-        layout.setHorizontalSpacing(18)
-        layout.setVerticalSpacing(10)
-
-        playlist_title_caption = QLabel("Current Playlist")
-        playlist_title_caption.setObjectName("subtitle")
-        layout.addWidget(playlist_title_caption, 0, 0)
-
-        self.playlist_title_value = QLabel("No playlist analyzed yet.")
-        self.playlist_title_value.setWordWrap(True)
-        layout.addWidget(self.playlist_title_value, 0, 1, 1, 3)
-
-        self.queued_count_value = QLabel("Queued: 0")
-        self.queued_count_value.setObjectName("subtitle")
-        layout.addWidget(self.queued_count_value, 1, 0)
-
-        self.skipped_count_value = QLabel("Skipped: 0")
-        self.skipped_count_value.setObjectName("subtitle")
-        layout.addWidget(self.skipped_count_value, 1, 1)
-
-        self.ready_status_value = QLabel("Idle")
-        self.ready_status_value.setObjectName("hint")
-        layout.addWidget(self.ready_status_value, 1, 2, 1, 2)
         return frame
 
     def _build_queue_card(self) -> QWidget:
@@ -274,13 +271,18 @@ class PlaylistPipelineWindow(QMainWindow):
         frame.setObjectName("card")
         layout = QVBoxLayout(frame)
 
-        title = QLabel("Render Queue")
+        header = QHBoxLayout()
+        title = QLabel("2  렌더링 대기열")
         title.setObjectName("subtitle")
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.queued_count_value = QLabel("0곡")
+        self.queued_count_value.setObjectName("hint")
+        header.addWidget(self.queued_count_value)
+        layout.addLayout(header)
 
         hint = QLabel(
-            "These tracks already have a resolved YouTube source and a lyric file. "
-            "Batch render will process them in order."
+            "가사와 음원이 준비된 곡입니다. 표시된 순서대로 처리됩니다."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -295,12 +297,18 @@ class PlaylistPipelineWindow(QMainWindow):
         frame.setObjectName("card")
         layout = QVBoxLayout(frame)
 
-        title = QLabel("Skipped Tracks")
+        header = QHBoxLayout()
+        title = QLabel("검토 필요 / 제외")
         title.setObjectName("subtitle")
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.skipped_count_value = QLabel("0곡")
+        self.skipped_count_value.setObjectName("hint")
+        header.addWidget(self.skipped_count_value)
+        layout.addLayout(header)
 
         hint = QLabel(
-            "Tracks without usable lyrics or with failed resolution stay here so you can review what was excluded."
+            "가사를 찾지 못했거나 자동 처리할 수 없는 곡이 표시됩니다."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -315,9 +323,15 @@ class PlaylistPipelineWindow(QMainWindow):
         frame.setObjectName("card")
         layout = QVBoxLayout(frame)
 
-        title = QLabel("Progress")
+        header = QHBoxLayout()
+        title = QLabel("3  작업 진행")
         title.setObjectName("subtitle")
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.playlist_title_value = QLabel("아직 분석한 플레이리스트가 없습니다.")
+        self.playlist_title_value.setObjectName("hint")
+        header.addWidget(self.playlist_title_value)
+        layout.addLayout(header)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -345,10 +359,8 @@ class PlaylistPipelineWindow(QMainWindow):
         if model_index >= 0:
             self.model_combo.setCurrentIndex(model_index)
 
-        self.api_key_status.setText(
-            "OPENAI_API_KEY detected."
-            if os.getenv("OPENAI_API_KEY")
-            else "Set OPENAI_API_KEY in .env or your shell before running the batch."
+        self.api_key_input.setPlaceholderText(
+            "설정됨 · 변경할 때만 입력" if os.getenv("OPENAI_API_KEY") else "sk-..."
         )
 
     def _persist_playlist_settings(self) -> None:
@@ -617,6 +629,39 @@ class PlaylistPipelineWindow(QMainWindow):
         self.append_progress_message(f"Cleaned {deleted} temp file(s).")
         QMessageBox.information(self, "Cleanup complete", "Temporary files were removed.")
 
+    def save_api_key(self) -> None:
+        key = self.api_key_input.text().strip()
+        if not key:
+            QMessageBox.information(self, "API 키", "변경할 API 키를 입력해 주세요.")
+            return
+        if not key.startswith("sk-"):
+            QMessageBox.warning(self, "API 키 확인", "OpenAI API 키 형식을 확인해 주세요.")
+            return
+
+        env_path = os.path.join(BASE_DIR, ".env")
+        existing: list[str] = []
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as env_file:
+                existing = [
+                    line.rstrip("\n")
+                    for line in env_file
+                    if not line.startswith("OPENAI_API_KEY=")
+                ]
+        existing.append(f"OPENAI_API_KEY={key}")
+        with open(env_path, "w", encoding="utf-8") as env_file:
+            env_file.write("\n".join(existing).strip() + "\n")
+
+        os.environ["OPENAI_API_KEY"] = key
+        self.api_key_input.clear()
+        self.api_key_input.setPlaceholderText("설정됨 · 변경할 때만 입력")
+        self.append_progress_message("OpenAI API 키를 저장했습니다.")
+        QMessageBox.information(self, "저장 완료", "API 키가 이 PC에 저장되었습니다.")
+
+    def open_output_folder(self) -> None:
+        ensure_data_dirs()
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(OUTPUT_DIR)):
+            QMessageBox.warning(self, "폴더 열기 실패", OUTPUT_DIR)
+
     def on_model_changed(self, index: int) -> None:
         model_id = self.model_combo.itemData(index)
         if model_id:
@@ -639,6 +684,8 @@ class PlaylistPipelineWindow(QMainWindow):
             self.remove_selected_button,
             self.clear_button,
             self.clean_button,
+            self.api_key_input,
+            self.save_key_button,
         ]:
             control.setDisabled(processing)
 
@@ -646,16 +693,16 @@ class PlaylistPipelineWindow(QMainWindow):
         queued_count = len(self.queue_items)
         skipped_count = self.skipped_list.count()
 
-        self.queued_count_value.setText(f"Queued: {queued_count}")
-        self.skipped_count_value.setText(f"Skipped: {skipped_count}")
+        self.queued_count_value.setText(f"{queued_count}곡")
+        self.skipped_count_value.setText(f"{skipped_count}곡")
 
         if self.worker is None and self.import_worker is None:
             if queued_count:
-                self.ready_status_value.setText("Ready for batch render")
+                self.ready_status_value.setText("렌더링 준비됨")
             elif self.current_playlist_title:
-                self.ready_status_value.setText("Analysis complete with no renderable tracks")
+                self.ready_status_value.setText("처리 가능한 곡 없음")
             else:
-                self.ready_status_value.setText("Idle")
+                self.ready_status_value.setText("준비됨")
 
         self.start_queue_button.setEnabled(
             bool(self.queue_items)
@@ -678,11 +725,12 @@ class PlaylistPipelineWindow(QMainWindow):
         self.queue_list.clear()
         self.skipped_list.clear()
         self.current_playlist_title = ""
-        self.playlist_title_value.setText("No playlist analyzed yet.")
+        self.playlist_title_value.setText("아직 분석한 플레이리스트가 없습니다.")
         self._refresh_pipeline_state()
 
     def _format_queue_text(self, queue_item: QueueItem) -> str:
-        return f"{queue_item.label}\nLyrics: {queue_item.lyrics_mode}"
+        lyrics_label = "싱크 가사" if queue_item.lyrics_mode == "synced" else "일반 가사"
+        return f"{queue_item.label}\n{lyrics_label}"
 
     def _capture_worker_result(self, output_path: str) -> None:
         self.worker_result_path = output_path
