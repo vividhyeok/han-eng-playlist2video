@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QDialog,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -33,7 +34,8 @@ from app.config.config_manager import get_config
 from app.config.paths import BASE_DIR, OUTPUT_DIR, TEMP_DIR, TRANSLATION_CACHE_PATH, ensure_data_dirs
 from app.lyrics.ai_models import OPENAI_MODELS, resolve_model
 from app.pipeline.playlist_importer import PlaylistImportReport, import_playlist
-from app.pipeline.process_manager import ProcessConfig, ProcessManager
+from app.pipeline.process_manager import ProcessConfig, ProcessManager, TimingReviewRequired
+from app.ui.sync_dialog import ManualSyncDialog
 from app.ui.styles import MODERN_STYLESHEET
 
 
@@ -47,7 +49,7 @@ class QueueItem:
 class WorkerThread(QThread):
     progress = pyqtSignal(str, int)
     result_ready = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
+    error_occurred = pyqtSignal(object)
 
     def __init__(self, config: ProcessConfig):
         super().__init__()
@@ -63,7 +65,7 @@ class WorkerThread(QThread):
         try:
             output_path = self.manager.process(self.config)
         except Exception as exc:
-            self.error_occurred.emit(str(exc))
+            self.error_occurred.emit(exc)
             return
 
         self.result_ready.emit(output_path)
@@ -115,7 +117,7 @@ class PlaylistPipelineWindow(QMainWindow):
         self.worker: Optional[WorkerThread] = None
         self.import_worker: Optional[PlaylistImportWorker] = None
         self.worker_result_path: Optional[str] = None
-        self.worker_error_message: Optional[str] = None
+        self.worker_error_message: Optional[object] = None
         self.processing_mode: Optional[str] = None
         self.last_progress_message = ""
 
@@ -195,7 +197,7 @@ class PlaylistPipelineWindow(QMainWindow):
         form.addWidget(QLabel("가사 정책"), 1, 0)
         self.lyrics_policy_combo = QComboBox()
         self.lyrics_policy_combo.addItem(
-            "일반 가사도 AI 자동 싱크 후 처리",
+            "일반 가사: AI 초안 후 직접 싱크 확인",
             "allow_plain",
         )
         self.lyrics_policy_combo.addItem(
@@ -543,8 +545,26 @@ class PlaylistPipelineWindow(QMainWindow):
         self.set_processing_state(False)
         self.ready_status_value.setText("Idle")
 
-    def on_process_error(self, error_message: str) -> None:
+    def on_process_error(self, error: object) -> None:
+        error_message = str(error)
         self.append_progress_message(f"Error: {error_message}")
+        if isinstance(error, TimingReviewRequired) and error.audio_path:
+            self.set_processing_state(False)
+            dialog = ManualSyncDialog(
+                audio_path=error.audio_path,
+                lrc_path=error.lrc_path,
+                parent=self,
+            )
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                queue_item = self.queue_items[self.current_queue_index]
+                queue_item.config.lrc_path = error.lrc_path
+                queue_item.lyrics_mode = "synced"
+                self.queue_list.item(self.current_queue_index).setText(self._format_queue_text(queue_item))
+                self.append_progress_message("수동 싱크를 저장했습니다. 현재 곡을 다시 처리합니다.")
+                config = deepcopy(queue_item.config)
+                config.batch_name = self.current_queue_batch_name
+                self._start_worker(config)
+                return
         if self.processing_mode == "queue":
             reply = QMessageBox.question(
                 self,
@@ -729,14 +749,14 @@ class PlaylistPipelineWindow(QMainWindow):
         self._refresh_pipeline_state()
 
     def _format_queue_text(self, queue_item: QueueItem) -> str:
-        lyrics_label = "싱크 가사 확인됨" if queue_item.lyrics_mode == "synced" else "AI 자동 싱크 예정"
+        lyrics_label = "싱크 가사 확인됨" if queue_item.lyrics_mode == "synced" else "AI 초안 + 직접 싱크 확인 예정"
         return f"{queue_item.label}\n{lyrics_label}"
 
     def _capture_worker_result(self, output_path: str) -> None:
         self.worker_result_path = output_path
 
-    def _capture_worker_error(self, error_message: str) -> None:
-        self.worker_error_message = error_message
+    def _capture_worker_error(self, error: object) -> None:
+        self.worker_error_message = error
 
     def _finalize_worker(self) -> None:
         self.worker = None

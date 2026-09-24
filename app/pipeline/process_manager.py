@@ -31,9 +31,10 @@ class ReviewRequired(RuntimeError):
 
 
 class TimingReviewRequired(ReviewRequired):
-    def __init__(self, message: str, *, lrc_path: str, score: int = 0, low_indexes: tuple[int, ...] = ()):
+    def __init__(self, message: str, *, lrc_path: str, audio_path: str = "", score: int = 0, low_indexes: tuple[int, ...] = ()):
         super().__init__(message)
         self.lrc_path = lrc_path
+        self.audio_path = audio_path
         self.score = score
         self.low_indexes = low_indexes
 
@@ -126,10 +127,20 @@ class ProcessManager:
                         )
                         score = int(round(sync_result.confidence * 100))
                         low_ratio = len(sync_result.low_confidence_indexes) / max(1, len(parse_lyrics_for_review(open(lrc_path, encoding="utf-8").read(), duration=duration)))
+                        raise TimingReviewRequired(
+                            f"AI 싱크 초안을 만들었습니다. 직접 재생하며 확인해 주세요. "
+                            f"모델 신뢰도 {score}%, 낮은 신뢰도 {len(sync_result.low_confidence_indexes)}줄, "
+                            f"낮은 비율 {low_ratio:.0%}",
+                            lrc_path=lrc_path,
+                            audio_path=resolved_audio,
+                            score=score,
+                            low_indexes=sync_result.low_confidence_indexes,
+                        )
                         if score < 82 or low_ratio > 0.12:
                             raise TimingReviewRequired(
                                 f"AI 자동 싱크 초안 생성 · 신뢰도 {score}% · 낮은 신뢰도 {len(sync_result.low_confidence_indexes)}줄",
                                 lrc_path=lrc_path,
+                                audio_path=resolved_audio,
                                 score=score,
                                 low_indexes=sync_result.low_confidence_indexes,
                             )
@@ -141,12 +152,14 @@ class ProcessManager:
                         raise TimingReviewRequired(
                             f"자동 싱크를 확정하지 못했습니다. Tap Sync로 보정하세요: {exc}",
                             lrc_path=lrc_path,
+                            audio_path=resolved_audio,
                             score=0,
                         ) from exc
                 else:
                     raise TimingReviewRequired(
                         "Plain lyric입니다. OpenAI API 키를 넣으면 자동 싱크를 먼저 시도하고, 아니면 Tap Sync로 맞출 수 있습니다.",
                         lrc_path=lrc_path,
+                        audio_path=resolved_audio,
                         score=0,
                     )
 
@@ -157,6 +170,7 @@ class ProcessManager:
                 raise TimingReviewRequired(
                     "가사 타이밍이 의심됩니다: " + ", ".join(timing_qa.reasons),
                     lrc_path=lrc_path,
+                    audio_path=resolved_audio,
                     score=timing_qa.score,
                 )
 
