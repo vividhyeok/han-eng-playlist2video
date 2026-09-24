@@ -19,6 +19,7 @@ from app.lyrics.lyric_text_utils import (
 from app.pipeline.process_manager import OutputMode, ProcessConfig
 from app.sources.genie_handler import (
     get_best_lyrics,
+    lyrics_integrity_problem,
     lyrics_are_synced,
     parse_genie_extra_info,
     search_genie_songs,
@@ -360,6 +361,10 @@ def _score_genie_candidate(
 def _save_lyrics_file(*, artist: str, title: str, lyrics_text: str) -> str:
     ensure_data_dirs()
     os.makedirs(LYRICS_DIR, exist_ok=True)
+
+    integrity_problem = lyrics_integrity_problem(lyrics_text)
+    if integrity_problem:
+        raise ValueError(f"가사를 저장할 수 없습니다. {integrity_problem}")
 
     filename = _sanitize_filename(f"{artist or 'Unknown'} - {title or 'Unknown'}")
     path = _build_available_lyrics_path(filename, lyrics_text)

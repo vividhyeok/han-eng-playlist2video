@@ -19,7 +19,7 @@ from app.lyrics.exception_policy import assess_timing, classify_lyrics
 from app.lyrics.translator_v2 import get_translation_review_issues, parse_lrc_and_translate, parse_lyrics_for_review
 from app.media.video_maker import get_audio_duration, make_lyric_video
 from app.sources.album_art_finder import download_album_art
-from app.sources.genie_handler import get_best_lyrics, lyrics_are_synced
+from app.sources.genie_handler import get_best_lyrics, lyrics_are_synced, lyrics_integrity_problem
 from app.sources.spotdl_handler import download_audio_simple
 from app.sources.youtube_handler import download_youtube_audio, validate_audio_file
 
@@ -61,6 +61,7 @@ class ProcessConfig:
     allow_lyricless: bool = True
     pretranslated_json_path: Optional[str] = None
     translation_hints: Optional[Dict[int, str]] = None
+    resume_existing: bool = False
 
 
 class ProcessManager:
@@ -232,7 +233,8 @@ class ProcessManager:
             run_output_dir = os.path.join(config.output_dir, run_folder_name)
             os.makedirs(run_target_dir, exist_ok=True)
             os.makedirs(run_output_dir, exist_ok=True)
-            filename = self._build_available_filename(base_filename, run_target_dir, run_output_dir)
+            filename = (base_filename if config.resume_existing else
+                        self._build_available_filename(base_filename, run_target_dir, run_output_dir))
         else:
             filename = base_filename
             run_folder_name = self._build_run_folder_name(filename)
@@ -270,6 +272,13 @@ class ProcessManager:
             with open(lrc_path, "r", encoding="utf-8") as file:
                 lyric_text = file.read()
 
+            integrity_problem = lyrics_integrity_problem(lyric_text)
+            if integrity_problem:
+                raise RuntimeError(
+                    "가사 원문이 손상되어 번역을 중단했습니다. "
+                    f"{integrity_problem} 가사를 다시 가져오거나 직접 붙여 넣어 주세요."
+                )
+
             if not lyrics_are_synced(lyric_text):
                 if not has_openai_api_key():
                     raise TimingReviewRequired(
@@ -295,7 +304,8 @@ class ProcessManager:
                     low_indexes=sync_result.low_confidence_indexes,
                 )
 
-            shutil.copyfile(lrc_path, copied_lrc_path)
+            if os.path.abspath(lrc_path) != os.path.abspath(copied_lrc_path):
+                shutil.copyfile(lrc_path, copied_lrc_path)
             parsed_for_qa = parse_lyrics_for_review(lyric_text, duration=duration)
             timing_qa = assess_timing(parsed_for_qa, duration)
             if timing_qa.suspicious:
@@ -311,7 +321,8 @@ class ProcessManager:
 
             if config.pretranslated_json_path and os.path.exists(config.pretranslated_json_path):
                 self.update_progress("직접 확인한 번역 적용", 66)
-                shutil.copyfile(config.pretranslated_json_path, lyrics_json_path)
+                if os.path.abspath(config.pretranslated_json_path) != os.path.abspath(lyrics_json_path):
+                    shutil.copyfile(config.pretranslated_json_path, lyrics_json_path)
             else:
                 message = "영문 가사 · 번역 생략" if not language_policy.translation_required else "문맥 기반 한영 번역"
                 self.update_progress(message, 62)
@@ -337,7 +348,16 @@ class ProcessManager:
             )
         else:
             self.update_progress("영상 렌더링", 84)
-            make_lyric_video(resolved_audio, image_path, lyrics_json_path, output_path)
+            partial_output = output_path + ".partial.mp4"
+            try:
+                make_lyric_video(resolved_audio, image_path, lyrics_json_path, partial_output)
+                os.replace(partial_output, output_path)
+            finally:
+                if os.path.exists(partial_output):
+                    try:
+                        os.remove(partial_output)
+                    except OSError:
+                        pass
             result = output_path
         self.update_progress("완료", 100)
         return result

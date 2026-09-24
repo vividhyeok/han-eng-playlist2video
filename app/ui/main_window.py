@@ -153,7 +153,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         copy = QVBoxLayout()
         copy.setSpacing(3)
-        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.1")
+        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.3.1")
         eyebrow.setObjectName("eyebrow")
         copy.addWidget(eyebrow)
 
@@ -567,6 +567,7 @@ class PlaylistPipelineWindow(QMainWindow):
                 self.append_progress_message("수동 싱크를 저장했습니다. 현재 곡을 다시 처리합니다.")
                 config = deepcopy(queue_item.config)
                 config.batch_name = self.current_queue_batch_name
+                config.resume_existing = True
                 self._start_worker(config)
                 return
         if isinstance(error, TranslationReviewRequired):
@@ -584,6 +585,7 @@ class PlaylistPipelineWindow(QMainWindow):
                 )
                 config = deepcopy(queue_item.config)
                 config.batch_name = self.current_queue_batch_name
+                config.resume_existing = True
                 self._start_worker(config)
                 return
         if self.processing_mode == "queue":

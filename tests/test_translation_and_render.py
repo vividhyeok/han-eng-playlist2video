@@ -16,9 +16,33 @@ from app.media.video_maker import (
 )
 from app.ui.translation_dialog import apply_manual_translations
 from app.pipeline.process_manager import ProcessConfig, ProcessManager
+from app.sources.genie_handler import lyrics_integrity_problem, lyrics_are_usable
 
 
 class TranslationPolicyTests(unittest.TestCase):
+    def test_encoding_damaged_lyrics_are_rejected_before_translation(self):
+        damaged = "[00:12.00]���� �Ӹ� �� ���Ӻ�"
+        self.assertFalse(lyrics_are_usable(damaged))
+        self.assertIn("인코딩", lyrics_integrity_problem(damaged))
+
+    def test_review_retry_reuses_same_batch_filename(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = os.path.join(temp_dir, "temp")
+            output = os.path.join(temp_dir, "output")
+            os.makedirs(target)
+            os.makedirs(output)
+            open(os.path.join(target, "Artist - Title.mp3"), "wb").close()
+            manager = ProcessManager(lambda *_: None)
+            self.assertEqual(
+                manager._build_available_filename("Artist - Title", target, output),
+                "Artist - Title_2",
+            )
+            config = ProcessConfig(
+                title="Title", artist="Artist", album_art_url="x",
+                youtube_url="x", resume_existing=True,
+            )
+            self.assertTrue(config.resume_existing)
+
     def test_process_validation_and_korean_search_normalization(self):
         manager = ProcessManager(lambda *_: None)
         config = ProcessConfig(title="", artist="", album_art_url="", youtube_url="")

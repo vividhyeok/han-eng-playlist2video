@@ -18,6 +18,30 @@ LRCLIB_BASE_URL = "https://lrclib.net/api"
 MUSIXMATCH_BASE_URL = "https://api.musixmatch.com/ws/1.1"
 
 
+class InvalidLyricsError(ValueError):
+    """Raised when a provider returned text that is unsafe to translate."""
+
+
+def lyrics_integrity_problem(text: str) -> Optional[str]:
+    """Return a user-facing reason when lyric text is empty or encoding-damaged.
+
+    U+FFFD cannot be repaired: the original bytes have already been discarded.  In
+    that case we must try another provider instead of asking the translation model
+    to hallucinate the missing Korean syllables.
+    """
+    normalized = normalize_lyrics_text(text)
+    if not normalized:
+        return "가사 내용이 비어 있습니다."
+    replacement_count = normalized.count("\ufffd")
+    if replacement_count:
+        return f"문자 인코딩이 손상되었습니다(복구 불가능 문자 {replacement_count}개)."
+    return None
+
+
+def lyrics_are_usable(text: str) -> bool:
+    return lyrics_integrity_problem(text) is None
+
+
 def search_genie_songs(query: str, limit: int = 4) -> List[Tuple[str, str, str, str, Optional[int]]]:
     try:
         songs = GenieAPI().search_song(query, limit=limit)
@@ -76,10 +100,12 @@ def get_genie_lyrics(song_id: str) -> Optional[str]:
             if os.path.isfile(candidate):
                 try:
                     with open(candidate, "r", encoding="utf-8") as file:
-                        return normalize_lyrics_text(file.read())
+                        text = normalize_lyrics_text(file.read())
+                        return text if lyrics_are_usable(text) else None
                 except Exception:
                     pass
-        return normalize_lyrics_text(lyrics)
+        text = normalize_lyrics_text(lyrics)
+        return text if lyrics_are_usable(text) else None
     return None
 
 
@@ -100,6 +126,8 @@ def _extract_lrclib(payload: Dict[str, Any], prefer_synced: bool) -> Optional[st
         return None
     synced = normalize_lyrics_text(payload.get("syncedLyrics") or "")
     plain = normalize_lyrics_text(payload.get("plainLyrics") or "")
+    synced = synced if lyrics_are_usable(synced) else ""
+    plain = plain if lyrics_are_usable(plain) else ""
     if prefer_synced and synced:
         return synced
     return plain or synced or None
@@ -170,7 +198,7 @@ def get_musixmatch_lyrics(*, title: str, artist: str, duration: Optional[int] = 
 
 def get_best_lyrics(*, song_id: str = "", title: str = "", artist: str = "", album: str = "", duration: Optional[int] = None) -> Optional[str]:
     genie = get_genie_lyrics(song_id) if song_id else None
-    if lyrics_are_synced(genie or ""):
+    if lyrics_are_synced(genie or "") and lyrics_are_usable(genie or ""):
         return genie
     lrclib_synced = get_lrclib_lyrics(title=title, artist=artist, album=album, duration=duration, prefer_synced=True)
     if lrclib_synced and lyrics_are_synced(lrclib_synced):
