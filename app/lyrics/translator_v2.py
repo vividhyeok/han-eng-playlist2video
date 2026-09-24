@@ -38,8 +38,8 @@ except ImportError:  # pragma: no cover
 HANGUL_PATTERN = re.compile(r"[\uac00-\ud7a3]")
 TIMESTAMP_PATTERN = re.compile(r"\[(\d{1,2}:\d{2}(?:[.:]\d{1,3})?)\]")
 METADATA_PATTERN = re.compile(r"^\[(ar|ti|al|by|offset|length):.*\]$", re.IGNORECASE)
-PROMPT_VERSION = "kr-rap-crossline-reconstruction-v8"
-CACHE_VERSION = 8
+PROMPT_VERSION = "kr-rap-crossline-reconstruction-v9"
+CACHE_VERSION = 9
 BASE_MODEL = DEFAULT_TRANSLATION_MODEL
 REVIEW_MODEL = REVIEW_TRANSLATION_MODEL
 FINAL_MODEL = "gpt-5.6-sol"
@@ -435,16 +435,24 @@ async def translate_lyrics_detailed(
         still_ambiguous = bool(data.get("needs_review")) or float(data.get("confidence", 1.0)) < 0.68
         if not protected_terms_preserved(lyrics[index], data.get("translated", "")):
             still_ambiguous = True
-        if still_ambiguous:
-            question = data.get("ambiguity_question") or "이 구절에서 의도한 의미나 대상이 무엇인지 한 줄로 알려주세요."
-            issues.append(TranslationIssue(
-                index=index,
-                source=lyrics[index],
-                translated=output[index],
-                question=question,
-                confidence=float(data.get("confidence", 0.0)),
-                stage=str(data.get("model", FINAL_MODEL)),
-            ))
+        # Reaching the final pass means two earlier passes already considered this
+        # line suspicious. Model confidence alone must not hide it from the user.
+        question = data.get("ambiguity_question")
+        if not question:
+            question = (
+                "문맥상 여러 해석이 가능해 최종 AI 검수를 거친 줄입니다. "
+                "현재 번역이 의도와 맞는지 확인해 주세요."
+                if not still_ambiguous else
+                "이 구절에서 의도한 의미나 대상이 무엇인지 한 줄로 알려주세요."
+            )
+        issues.append(TranslationIssue(
+            index=index,
+            source=lyrics[index],
+            translated=output[index],
+            question=question,
+            confidence=float(data.get("confidence", 0.0)),
+            stage=str(data.get("model", FINAL_MODEL)),
+        ))
 
     if use_cache:
         cache.setdefault("songs", {})[key] = {

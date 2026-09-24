@@ -11,7 +11,8 @@ from app.lyrics.lyric_text_utils import (
     preserve_lyric_line_breaks, split_long_lines_preserving_boundaries,
 )
 from app.lyrics.translator_v2 import (
-    _repeat_groups, _request_translation, parse_lrc_and_translate,
+    _repeat_groups, _request_translation, get_translation_review_issues,
+    parse_lrc_and_translate,
 )
 from app.media.video_maker import (
     _crop_to_aspect, _group_simultaneous_lyrics, _wrap_subtitle, _write_ass,
@@ -26,6 +27,36 @@ from app.sources.genie_handler import lyrics_integrity_problem, lyrics_are_usabl
 
 
 class TranslationPolicyTests(unittest.TestCase):
+    def test_translation_review_marker_is_loaded_for_manual_review(self):
+        handle, path = tempfile.mkstemp(suffix=".json")
+        os.close(handle)
+        try:
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump([
+                    {"original": "평범한 줄", "english": "A plain line"},
+                    {
+                        "original": "도치된 문제 구절",
+                        "english": "A difficult inverted line",
+                        "translation_review": {
+                            "source": "도치된 문제 구절",
+                            "translated": "A difficult inverted line",
+                            "question": "의도 확인",
+                            "confidence": 0.91,
+                            "stage": "gpt-5.6-sol",
+                        },
+                    },
+                ], file, ensure_ascii=False)
+            self.assertEqual(get_translation_review_issues(path), [{
+                "source": "도치된 문제 구절",
+                "translated": "A difficult inverted line",
+                "question": "의도 확인",
+                "confidence": 0.91,
+                "stage": "gpt-5.6-sol",
+                "index": 1,
+            }])
+        finally:
+            os.remove(path)
+
     def test_external_translation_codeblock_parses_and_requires_all_indexes(self):
         pasted = '''```json
         {"translations":[{"index":2,"english":"Two"},{"index":7,"english":"Seven"}]}

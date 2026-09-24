@@ -321,10 +321,19 @@ class ProcessManager:
 
             issues = get_translation_review_issues(lyrics_json_path)
             if issues:
+                self.update_progress(f"번역 검토 필요 · {len(issues)}줄", 72)
                 raise TranslationReviewRequired(
                     f"직접 확인이 필요한 번역이 {len(issues)}개 있습니다.",
                     json_path=lyrics_json_path, issues=issues,
                 )
+            try:
+                with open(lyrics_json_path, "r", encoding="utf-8") as file:
+                    translated_line_count = len(json.load(file))
+            except (OSError, ValueError, TypeError):
+                translated_line_count = 0
+            self.update_progress(
+                f"번역 자동 검수 완료 · 수동 확인 0줄 · 전체 {translated_line_count}줄", 72
+            )
 
         self._ensure_required_files(resolved_audio, image_path, lyrics_json_path)
         if config.output_mode == "premiere_xml":
