@@ -196,7 +196,7 @@ def get_musixmatch_lyrics(*, title: str, artist: str, duration: Optional[int] = 
     return text or None
 
 
-def get_best_lyrics(*, song_id: str = "", title: str = "", artist: str = "", album: str = "", duration: Optional[int] = None) -> Optional[str]:
+def get_best_lyrics(*, song_id: str = "", title: str = "", artist: str = "", album: str = "", duration: Optional[int] = None, synced_only: bool = False) -> Optional[str]:
     genie = get_genie_lyrics(song_id) if song_id else None
     if lyrics_are_synced(genie or "") and lyrics_are_usable(genie or ""):
         return genie
@@ -206,6 +206,8 @@ def get_best_lyrics(*, song_id: str = "", title: str = "", artist: str = "", alb
     mxm_synced = get_musixmatch_lyrics(title=title, artist=artist, duration=duration, prefer_synced=True)
     if mxm_synced and lyrics_are_synced(mxm_synced):
         return mxm_synced
+    if synced_only:
+        return None
     if genie:
         return genie
     if lrclib_synced:

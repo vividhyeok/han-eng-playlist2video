@@ -234,6 +234,7 @@ def _prepare_track(
             artist=resolved_artist,
             album=resolved_album,
             duration=duration,
+            synced_only=True,
         )
 
     if not lyrics_text:
@@ -242,13 +243,16 @@ def _prepare_track(
             artist=source_track.artist,
             album=source_track.album,
             duration=source_track.duration,
+            synced_only=True,
         )
 
     if not lyrics_text:
         return None
 
     synced = lyrics_are_synced(lyrics_text)
-    if lyrics_policy == "require_synced" and not synced:
+    # Unsynced lyrics are deliberately not imported. They are often incomplete or
+    # line-broken differently from the source the user actually wants to time.
+    if not synced:
         return None
 
     lrc_path = _save_lyrics_file(
@@ -441,9 +445,7 @@ def _build_skip_reason(
     source_track: PlaylistSourceTrack,
     lyrics_policy: LyricsPolicy,
 ) -> str:
-    if lyrics_policy == "require_synced":
-        return "No synced lyrics were found."
-    return "No lyrics were found."
+    return "No synced lyrics were found. Use 가사+타이밍 등록 to paste the exact lyrics yourself."
 
 
 def _emit_progress(

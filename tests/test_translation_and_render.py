@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -24,9 +25,21 @@ from app.ui.translation_dialog import (
 )
 from app.pipeline.process_manager import ProcessConfig, ProcessManager
 from app.sources.genie_handler import lyrics_integrity_problem, lyrics_are_usable
+from app.sources.genie_handler import get_best_lyrics
 
 
 class TranslationPolicyTests(unittest.TestCase):
+    @patch("app.sources.genie_handler.get_musixmatch_lyrics")
+    @patch("app.sources.genie_handler.get_lrclib_lyrics")
+    def test_synced_only_lookup_never_falls_back_to_plain_lyrics(self, lrclib, musixmatch):
+        lrclib.return_value = "plain lyrics without timestamps"
+        musixmatch.return_value = "another plain lyric"
+        self.assertIsNone(get_best_lyrics(
+            title="Title", artist="Artist", synced_only=True,
+        ))
+        self.assertEqual(lrclib.call_count, 1)
+        self.assertEqual(musixmatch.call_count, 1)
+
     def test_translation_review_marker_is_loaded_for_manual_review(self):
         handle, path = tempfile.mkstemp(suffix=".json")
         os.close(handle)

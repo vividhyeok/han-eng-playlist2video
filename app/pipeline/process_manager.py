@@ -62,6 +62,7 @@ class ProcessConfig:
     translation_hints: Optional[Dict[int, str]] = None
     resume_existing: bool = False
     force_manual_sync: bool = False
+    manual_lyrics_registration: bool = False
 
 
 class ProcessManager:
@@ -261,6 +262,15 @@ class ProcessManager:
             raise RuntimeError("앨범아트를 가져오지 못했습니다.")
 
         self.update_progress("가사 확인", 38)
+        if config.manual_lyrics_registration:
+            lrc_path = os.path.join(run_output_dir, f"{filename}.lrc")
+            if not os.path.exists(lrc_path):
+                with open(lrc_path, "w", encoding="utf-8") as file:
+                    file.write("")
+            raise TimingReviewRequired(
+                "가사를 붙여 넣고 같은 화면에서 바로 타이밍을 기록해 주세요.",
+                lrc_path=lrc_path, audio_path=resolved_audio,
+            )
         lrc_path = self._resolve_lrc_path(config, filename)
         if not lrc_path:
             if not config.allow_lyricless:

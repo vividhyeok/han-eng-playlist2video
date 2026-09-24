@@ -5,7 +5,7 @@ import re
 from PyQt6.QtCore import QTimer, QUrl, Qt
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtWidgets import (QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
+from PyQt6.QtWidgets import (QApplication, QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
     QMessageBox, QPushButton, QSlider, QTextEdit, QVBoxLayout)
 
 from app.lyrics.lyric_text_utils import (
@@ -106,7 +106,7 @@ class ManualSyncDialog(QDialog):
         self.current_index = min(self.low_indexes) if self.low_indexes else 0
         self.history: list[tuple[int, float, bool]] = []
         self.setWindowTitle("수동 가사 타이밍 매핑")
-        self.resize(1040, 760)
+        self.resize(1040, 850)
         self.setModal(True)
 
         self.audio_output = QAudioOutput(self)
@@ -123,6 +123,36 @@ class ManualSyncDialog(QDialog):
         help_text.setObjectName("hint")
         help_text.setWordWrap(True)
         root.addWidget(help_text)
+
+        lyric_heading = QLabel("1. 가사 원문 · 한 줄에 한 구절")
+        lyric_heading.setObjectName("subtitle")
+        root.addWidget(lyric_heading)
+        self.lyrics_editor = QTextEdit()
+        self.lyrics_editor.setPlaceholderText(
+            "여기에 가사를 붙여 넣으세요. 원본 줄바꿈은 그대로 유지됩니다."
+        )
+        self.lyrics_editor.setMaximumHeight(170)
+        self.lyrics_editor.setPlainText("\n".join(str(point["text"]) for point in self.points))
+        root.addWidget(self.lyrics_editor)
+        lyric_tools = QHBoxLayout()
+        self.lyric_summary = QLabel("")
+        self.lyric_summary.setObjectName("hint")
+        lyric_tools.addWidget(self.lyric_summary, stretch=1)
+        split_button = QPushButton("✂ 긴 줄만 분할")
+        split_button.setObjectName("secondary")
+        split_button.clicked.connect(self.smart_split_lyrics)
+        lyric_tools.addWidget(split_button)
+        apply_lyrics_button = QPushButton("가사 줄 적용")
+        apply_lyrics_button.clicked.connect(self.apply_lyrics_text)
+        lyric_tools.addWidget(apply_lyrics_button)
+        root.addLayout(lyric_tools)
+        self.lyrics_editor.textChanged.connect(self._refresh_lyric_summary)
+        self._applied_lyrics_text = preserve_lyric_line_breaks(self.lyrics_editor.toPlainText())
+        self._refresh_lyric_summary()
+
+        timing_heading = QLabel("2. 재생하면서 각 줄의 시작 시간 기록")
+        timing_heading.setObjectName("subtitle")
+        root.addWidget(timing_heading)
 
         self.position_label = QLabel("00:00.00 / 00:00.00")
         root.addWidget(self.position_label)
@@ -186,7 +216,52 @@ class ManualSyncDialog(QDialog):
             shortcut.setAutoRepeat(False)
             shortcut.activated.connect(callback)
             self.shortcuts.append(shortcut)
+        app = QApplication.instance()
+        if app is not None:
+            app.focusChanged.connect(self._update_shortcut_state)
         self._refresh_lines()
+
+    def _update_shortcut_state(self, _old, focused):
+        editing_lyrics = focused is self.lyrics_editor or (
+            focused is not None and self.lyrics_editor.isAncestorOf(focused)
+        )
+        for shortcut in self.shortcuts:
+            shortcut.setEnabled(not editing_lyrics)
+
+    def _refresh_lyric_summary(self):
+        summary = summarize_preserved_lyric_text(self.lyrics_editor.toPlainText())
+        self.lyric_summary.setText(
+            f"원본 줄바꿈 유지 · {summary.line_count}줄"
+            + (f" · 긴 줄 {summary.long_line_count}개" if summary.long_line_count else "")
+        )
+
+    def smart_split_lyrics(self):
+        source = self.lyrics_editor.toPlainText()
+        split = split_long_lines_preserving_boundaries(source)
+        if split == preserve_lyric_line_breaks(source):
+            QMessageBox.information(self, "분할 결과", "이미 자막으로 읽기 좋은 길이입니다.")
+            return
+        self.lyrics_editor.setPlainText(split)
+
+    def apply_lyrics_text(self):
+        prepared = preserve_lyric_line_breaks(self.lyrics_editor.toPlainText())
+        lines = prepared.splitlines() if prepared else []
+        if not lines:
+            QMessageBox.warning(self, "가사 확인", "가사를 한 줄 이상 붙여 넣으세요.")
+            return False
+        old_points = self.points
+        new_points = []
+        for index, text in enumerate(lines):
+            if index < len(old_points) and str(old_points[index].get("text", "")) == text:
+                new_points.append(dict(old_points[index]))
+            else:
+                new_points.append({"time": 0.0, "text": text, "assigned": False})
+        self.points = new_points
+        self.current_index = min(self.current_index, len(self.points) - 1)
+        self.history.clear()
+        self._applied_lyrics_text = prepared
+        self._refresh_lines()
+        return True
 
     def toggle_playback(self):
         self.player.pause() if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState else self.player.play()
@@ -247,6 +322,9 @@ class ManualSyncDialog(QDialog):
         self.play_button.setText("일시정지" if state == QMediaPlayer.PlaybackState.PlayingState else "재생")
 
     def save_and_accept(self):
+        current_text = preserve_lyric_line_breaks(self.lyrics_editor.toPlainText())
+        if current_text != self._applied_lyrics_text and not self.apply_lyrics_text():
+            return
         if not self.points:
             QMessageBox.warning(self, "가사 확인", "매핑할 가사 줄이 없습니다."); return
         unset = [i + 1 for i, point in enumerate(self.points) if not bool(point.get("assigned"))]
