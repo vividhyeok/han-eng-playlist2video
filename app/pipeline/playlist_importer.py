@@ -303,6 +303,35 @@ def _find_best_genie_result(
     return best_candidate if best_score >= 55 else None
 
 
+def prepare_manual_lyrics_track(
+    source_track: PlaylistSourceTrack,
+    lyrics_text: str,
+    *,
+    output_mode: OutputMode = "video",
+) -> PlaylistPreparedTrack:
+    """Promote a skipped playlist item using lyrics supplied by the user."""
+    prepared = prepare_lyric_text_for_subtitles(normalize_lyric_text(lyrics_text))
+    if not prepared.strip():
+        raise ValueError("붙여 넣은 가사에 사용할 수 있는 줄이 없습니다.")
+    artist = source_track.artist or "Unknown artist"
+    title = source_track.title or "Unknown title"
+    lrc_path = _save_lyrics_file(artist=artist, title=title, lyrics_text=prepared)
+    config = ProcessConfig(
+        title=title, artist=artist,
+        album_art_url=source_track.thumbnail_url,
+        youtube_url=source_track.youtube_url,
+        output_mode=output_mode,
+        lrc_path=lrc_path,
+        prefer_youtube=True,
+    )
+    return PlaylistPreparedTrack(
+        config=config,
+        label=f"{artist} - {title} [{output_mode}]",
+        lyrics_mode="plain",
+        source=source_track,
+    )
+
+
 def _build_search_queries(source_track: PlaylistSourceTrack) -> Iterable[str]:
     artist = source_track.artist.strip()
     title = source_track.title.strip()

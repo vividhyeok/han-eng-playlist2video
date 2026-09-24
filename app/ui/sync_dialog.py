@@ -5,9 +5,33 @@ import re
 from PyQt6.QtCore import QTimer, QUrl, Qt
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
-    QMessageBox, QPushButton, QSlider, QVBoxLayout)
+    QMessageBox, QPushButton, QSlider, QTextEdit, QVBoxLayout)
 
 TIMESTAMP = re.compile(r"\[(\d{1,2}):(\d{2}(?:\.\d{1,3})?)\]")
+
+class PlainLyricsDialog(QDialog):
+    def __init__(self, *, artist: str, title: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("일반 가사 붙여 넣기")
+        self.resize(760, 620)
+        layout = QVBoxLayout(self)
+        heading = QLabel(f"{artist} - {title}"); heading.setObjectName("subtitle"); layout.addWidget(heading)
+        note = QLabel("가사를 한 줄에 한 구절씩 붙여 넣으세요. 저장 후 음원을 준비하고 수동 타이밍 매핑을 시작합니다.")
+        note.setObjectName("hint"); note.setWordWrap(True); layout.addWidget(note)
+        self.editor = QTextEdit(); self.editor.setPlaceholderText("첫 번째 가사 줄\n두 번째 가사 줄\n세 번째 가사 줄")
+        layout.addWidget(self.editor, stretch=1)
+        actions = QHBoxLayout(); actions.addStretch()
+        cancel = QPushButton("취소"); cancel.setObjectName("secondary"); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
+        save = QPushButton("가사 저장 후 수동 타이밍 시작"); save.clicked.connect(self._accept_if_valid); actions.addWidget(save)
+        layout.addLayout(actions)
+
+    def _accept_if_valid(self):
+        if not self.lyrics_text():
+            QMessageBox.warning(self, "가사 확인", "가사를 한 줄 이상 입력하세요."); return
+        self.accept()
+
+    def lyrics_text(self) -> str:
+        return self.editor.toPlainText().strip()
 
 def _load_points(path: str) -> list[dict[str, float | str]]:
     points = []

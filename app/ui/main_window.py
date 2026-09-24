@@ -33,11 +33,14 @@ from PyQt6.QtWidgets import (
 from app.config.config_manager import get_config
 from app.config.paths import BASE_DIR, OUTPUT_DIR, TEMP_DIR, TRANSLATION_CACHE_PATH, ensure_data_dirs
 from app.lyrics.ai_models import OPENAI_MODELS, resolve_model
-from app.pipeline.playlist_importer import PlaylistImportReport, import_playlist
+from app.pipeline.playlist_importer import (
+    PlaylistImportReport, PlaylistSkippedTrack, import_playlist,
+    prepare_manual_lyrics_track,
+)
 from app.pipeline.process_manager import (
     ProcessConfig, ProcessManager, TimingReviewRequired, TranslationReviewRequired,
 )
-from app.ui.sync_dialog import ManualSyncDialog
+from app.ui.sync_dialog import ManualSyncDialog, PlainLyricsDialog
 from app.ui.translation_dialog import TranslationReviewDialog
 from app.ui.styles import MODERN_STYLESHEET
 
@@ -114,6 +117,7 @@ class PlaylistPipelineWindow(QMainWindow):
         self.output_mode = self.config_manager.get("output_mode", "video")
 
         self.queue_items: list[QueueItem] = []
+        self.skipped_tracks: list[PlaylistSkippedTrack] = []
         self.current_queue_index = 0
         self.current_queue_batch_name: Optional[str] = None
         self.current_playlist_title = ""
@@ -153,7 +157,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         copy = QVBoxLayout()
         copy.setSpacing(3)
-        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.4.0")
+        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.4.1")
         eyebrow.setObjectName("eyebrow")
         copy.addWidget(eyebrow)
 
@@ -299,6 +303,10 @@ class PlaylistPipelineWindow(QMainWindow):
         layout.addWidget(hint)
 
         self.queue_list = QListWidget()
+        self.queue_list.itemSelectionChanged.connect(
+            lambda: self.skipped_list.clearSelection()
+            if self.queue_list.selectedItems() and hasattr(self, "skipped_list") else None
+        )
         layout.addWidget(self.queue_list, stretch=1)
         return frame
 
@@ -325,6 +333,10 @@ class PlaylistPipelineWindow(QMainWindow):
         layout.addWidget(hint)
 
         self.skipped_list = QListWidget()
+        self.skipped_list.itemSelectionChanged.connect(
+            lambda: self.queue_list.clearSelection()
+            if self.skipped_list.selectedItems() else None
+        )
         layout.addWidget(self.skipped_list, stretch=1)
         return frame
 
@@ -456,6 +468,7 @@ class PlaylistPipelineWindow(QMainWindow):
             )
 
         for skipped_track in report.skipped_tracks:
+            self.skipped_tracks.append(skipped_track)
             self.skipped_list.addItem(
                 f"{skipped_track.source.label}\nReason: {skipped_track.reason}"
             )
@@ -507,8 +520,35 @@ class PlaylistPipelineWindow(QMainWindow):
             return
         row = self.queue_list.currentRow()
         if row < 0 or row >= len(self.queue_items):
-            QMessageBox.information(self, "곡 선택", "수동 타이밍을 맞출 곡을 먼저 선택하세요.")
-            return
+            skipped_row = self.skipped_list.currentRow()
+            if skipped_row < 0 or skipped_row >= len(self.skipped_tracks):
+                QMessageBox.information(self, "곡 선택", "왼쪽 대기열 또는 오른쪽 제외 목록에서 곡을 먼저 선택하세요.")
+                return
+            skipped = self.skipped_tracks[skipped_row]
+            dialog = PlainLyricsDialog(
+                artist=skipped.source.artist,
+                title=skipped.source.title,
+                parent=self,
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            try:
+                prepared = prepare_manual_lyrics_track(
+                    skipped.source,
+                    dialog.lyrics_text(),
+                    output_mode=self.output_mode_combo.currentData(),
+                )
+            except Exception as exc:
+                QMessageBox.critical(self, "가사 준비 실패", str(exc))
+                return
+            queue_item = QueueItem(config=prepared.config, label=prepared.label, lyrics_mode="plain")
+            self.queue_items.append(queue_item)
+            self.queue_list.addItem(self._format_queue_text(queue_item))
+            row = len(self.queue_items) - 1
+            self.queue_list.setCurrentRow(row)
+            self.skipped_tracks.pop(skipped_row)
+            self.skipped_list.takeItem(skipped_row)
+            self._refresh_pipeline_state()
         self.processing_mode = "single_queue_item"
         self.current_queue_index = row
         self.current_queue_batch_name = self._build_queue_batch_name()
@@ -785,7 +825,7 @@ class PlaylistPipelineWindow(QMainWindow):
             and self.import_worker is None
         )
         self.manual_sync_button.setEnabled(
-            bool(self.queue_items)
+            (bool(self.queue_items) or skipped_count > 0)
             and self.worker is None
             and self.import_worker is None
         )
@@ -799,6 +839,7 @@ class PlaylistPipelineWindow(QMainWindow):
         self.queue_items.clear()
         self.queue_list.clear()
         self.skipped_list.clear()
+        self.skipped_tracks.clear()
         self.current_playlist_title = ""
         self.playlist_title_value.setText("아직 분석한 플레이리스트가 없습니다.")
         self._refresh_pipeline_state()
