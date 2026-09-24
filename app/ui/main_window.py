@@ -157,7 +157,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         copy = QVBoxLayout()
         copy.setSpacing(3)
-        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.6.0")
+        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.6.1")
         eyebrow.setObjectName("eyebrow")
         copy.addWidget(eyebrow)
 
@@ -487,6 +487,16 @@ class PlaylistPipelineWindow(QMainWindow):
         if self.worker is not None or self.import_worker is not None or not self.queue_items:
             return
 
+        pending = [item.label for item in self.queue_items if item.lyrics_mode != "synced"]
+        if pending:
+            QMessageBox.information(
+                self,
+                "가사+타이밍 등록 필요",
+                f"아직 등록을 마치지 않은 곡이 {len(pending)}곡 있습니다.\n"
+                "각 곡의 가사와 타이밍을 먼저 저장한 뒤 전체 렌더링을 시작하세요.",
+            )
+            return
+
         self.processing_mode = "queue"
         self.current_queue_index = 0
         self.current_queue_batch_name = self._build_queue_batch_name()
@@ -608,11 +618,27 @@ class PlaylistPipelineWindow(QMainWindow):
                 queue_item.config.manual_lyrics_registration = False
                 queue_item.lyrics_mode = "synced"
                 self._refresh_queue_row(self.current_queue_index)
-                self.append_progress_message("수동 싱크를 저장했습니다. 현재 곡을 다시 처리합니다.")
+                self._refresh_pipeline_state()
+                if self.processing_mode == "single_queue_item":
+                    self.append_progress_message(
+                        "가사와 타이밍을 저장했습니다. 전체 렌더링 시작 전까지 렌더링하지 않습니다."
+                    )
+                    self.processing_mode = None
+                    self.current_queue_batch_name = None
+                    self.ready_status_value.setText("가사+타이밍 저장됨")
+                    return
+                self.append_progress_message("수동 싱크를 저장했습니다. 현재 렌더링 작업을 계속합니다.")
                 config = deepcopy(queue_item.config)
                 config.batch_name = self.current_queue_batch_name
                 config.resume_existing = True
                 self._start_worker(config)
+                return
+            if self.processing_mode == "single_queue_item":
+                self.processing_mode = None
+                self.current_queue_batch_name = None
+                self.set_processing_state(False)
+                self._refresh_pipeline_state()
+                self.append_progress_message("가사+타이밍 등록을 취소했습니다. 나중에 다시 열 수 있습니다.")
                 return
         if isinstance(error, TranslationReviewRequired):
             self.set_processing_state(False)
@@ -797,6 +823,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         self.start_queue_button.setEnabled(
             bool(self.queue_items)
+            and all(item.lyrics_mode == "synced" for item in self.queue_items)
             and self.worker is None
             and self.import_worker is None
         )
@@ -864,10 +891,15 @@ class PlaylistPipelineWindow(QMainWindow):
         self.skipped_list.setItemWidget(item, widget)
 
     def _start_queue_row_timing(self, item: QListWidgetItem) -> None:
+        self.skipped_list.clearSelection()
+        self.skipped_list.setCurrentRow(-1)
         self.queue_list.setCurrentItem(item)
         self.start_selected_manual_sync()
 
     def _start_skipped_row_registration(self, item: QListWidgetItem) -> None:
+        # Do not let a previously selected queue row steal this button click.
+        self.queue_list.clearSelection()
+        self.queue_list.setCurrentRow(-1)
         self.skipped_list.setCurrentItem(item)
         self.start_selected_manual_sync()
 
