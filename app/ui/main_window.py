@@ -34,8 +34,11 @@ from app.config.config_manager import get_config
 from app.config.paths import BASE_DIR, OUTPUT_DIR, TEMP_DIR, TRANSLATION_CACHE_PATH, ensure_data_dirs
 from app.lyrics.ai_models import OPENAI_MODELS, resolve_model
 from app.pipeline.playlist_importer import PlaylistImportReport, import_playlist
-from app.pipeline.process_manager import ProcessConfig, ProcessManager, TimingReviewRequired
+from app.pipeline.process_manager import (
+    ProcessConfig, ProcessManager, TimingReviewRequired, TranslationReviewRequired,
+)
 from app.ui.sync_dialog import ManualSyncDialog
+from app.ui.translation_dialog import TranslationReviewDialog
 from app.ui.styles import MODERN_STYLESHEET
 
 
@@ -561,6 +564,23 @@ class PlaylistPipelineWindow(QMainWindow):
                 queue_item.lyrics_mode = "synced"
                 self.queue_list.item(self.current_queue_index).setText(self._format_queue_text(queue_item))
                 self.append_progress_message("수동 싱크를 저장했습니다. 현재 곡을 다시 처리합니다.")
+                config = deepcopy(queue_item.config)
+                config.batch_name = self.current_queue_batch_name
+                self._start_worker(config)
+                return
+        if isinstance(error, TranslationReviewRequired):
+            self.set_processing_state(False)
+            dialog = TranslationReviewDialog(
+                json_path=error.json_path,
+                issues=error.issues,
+                parent=self,
+            )
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                queue_item = self.queue_items[self.current_queue_index]
+                queue_item.config.pretranslated_json_path = error.json_path
+                self.append_progress_message(
+                    f"애매한 번역 {len(error.issues)}개를 직접 확정했습니다. 현재 곡을 다시 처리합니다."
+                )
                 config = deepcopy(queue_item.config)
                 config.batch_name = self.current_queue_batch_name
                 self._start_worker(config)

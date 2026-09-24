@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 
@@ -10,9 +11,31 @@ from app.media.video_maker import (
     _crop_to_aspect, _group_simultaneous_lyrics, _wrap_subtitle, _write_ass,
     prepare_base_frame,
 )
+from app.ui.translation_dialog import apply_manual_translations
 
 
 class TranslationPolicyTests(unittest.TestCase):
+    def test_manual_translation_clears_review_marker(self):
+        handle, path = tempfile.mkstemp(suffix=".json")
+        os.close(handle)
+        try:
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump([
+                    {
+                        "original": "누굴 탓해",
+                        "english": "Who blame?",
+                        "translation_review": {"question": "주어가 누구인가요?"},
+                    }
+                ], file, ensure_ascii=False)
+            apply_manual_translations(path, {0: "Who the hell can I blame?"})
+            with open(path, encoding="utf-8") as file:
+                result = json.load(file)[0]
+            self.assertEqual(result["english"], "Who the hell can I blame?")
+            self.assertNotIn("translation_review", result)
+            self.assertEqual(result["translation_meta"]["model"], "manual")
+        finally:
+            os.remove(path)
+
     def test_mixed_korean_english_requires_translation(self):
         policy = classify_lyrics(["난 Seoul에서 flex with my crew"])
         self.assertEqual(policy.language_mode, "mixed")
