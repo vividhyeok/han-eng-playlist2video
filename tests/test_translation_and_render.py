@@ -7,6 +7,9 @@ from types import SimpleNamespace
 from PIL import Image
 
 from app.lyrics.exception_policy import classify_lyrics, extract_protected_english
+from app.lyrics.lyric_text_utils import (
+    preserve_lyric_line_breaks, split_long_lines_preserving_boundaries,
+)
 from app.lyrics.translator_v2 import (
     _repeat_groups, _request_translation, parse_lrc_and_translate,
 )
@@ -172,6 +175,17 @@ class StructuredTranslationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SubtitleLayoutTests(unittest.TestCase):
+    def test_manual_lyrics_preserve_original_line_boundaries(self):
+        source = "첫 줄 / 슬래시도 원문\n둘째 줄 그대로"
+        self.assertEqual(preserve_lyric_line_breaks(source), source)
+
+    def test_smart_split_never_merges_across_source_lines(self):
+        first = "이 줄은 화면에서 읽기에는 상당히 길기 때문에 의미 단위에 가까운 위치에서 나누어야 합니다"
+        second = "둘째 원본 줄"
+        result = split_long_lines_preserving_boundaries(first + "\n" + second).splitlines()
+        self.assertGreater(len(result), 2)
+        self.assertEqual(result[-1], second)
+
     def test_landscape_thumbnail_uses_center_square_without_stretching(self):
         source = Image.new("RGB", (1600, 900), "red")
         source.paste(Image.new("RGB", (900, 900), "blue"), (350, 0))

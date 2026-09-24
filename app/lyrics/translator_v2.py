@@ -38,8 +38,8 @@ except ImportError:  # pragma: no cover
 HANGUL_PATTERN = re.compile(r"[\uac00-\ud7a3]")
 TIMESTAMP_PATTERN = re.compile(r"\[(\d{1,2}:\d{2}(?:[.:]\d{1,3})?)\]")
 METADATA_PATTERN = re.compile(r"^\[(ar|ti|al|by|offset|length):.*\]$", re.IGNORECASE)
-PROMPT_VERSION = "kr-rap-context-escalation-v7"
-CACHE_VERSION = 7
+PROMPT_VERSION = "kr-rap-crossline-reconstruction-v8"
+CACHE_VERSION = 8
 BASE_MODEL = DEFAULT_TRANSLATION_MODEL
 REVIEW_MODEL = REVIEW_TRANSLATION_MODEL
 FINAL_MODEL = "gpt-5.6-sol"
@@ -149,9 +149,11 @@ def _instructions(stage: str) -> str:
     }.get(stage, "")
     return f"""You are a Korean-to-English subtitle translator specializing in Korean hip-hop, rap, R&B, and indie lyrics.
 
-Reconstruct meaning from adjacent bars before translating. Handle omitted subjects, inverted syntax, fragments spanning lines, phonetic spelling, wordplay, slang, flex language, cultural references, profanity, irony, and code-switching. Preserve the artist's register and emotional force; do not sanitize. Translate pragmatic meaning rather than dictionary surface meaning, but never invent a specific referent unsupported by context.
+Treat the ordered song context as connected writing, not a bag of isolated lines. Before translating, silently group adjacent lines that form one clause or sentence and reconstruct their normal Korean word order. Resolve omitted subjects, objects, particles, and predicates from that group when supported. Then distribute the complete English meaning back across the original indexes in subtitle order: do not duplicate meaning on two lines, drop a modifier on a neighboring line, or turn a specific image into vague filler.
 
-Keep protected English words, names, crews, labels, brands, neighborhoods, ad-libs, and rhyme anchors intact. Copy fully English lines unchanged. Identical hooks must use identical wording. Keep each English subtitle concise and natural enough to read on screen.
+Korean rap often delays the predicate, fronts an object, continues a comparison or cause into the next bar, and places the subject several lines away. Handle these cross-line dependencies, inversion, phonetic spelling, wordplay, slang, flex language, cultural references, profanity, irony, and code-switching. Preserve concrete nouns, actions, relationships, tense, negation, causality, and the artist's register. Avoid vague substitutes such as "something," "things," "it," or generic motivational paraphrases when the connected Korean lines are more specific. Never invent a referent unsupported by context.
+
+Keep protected English words, names, crews, labels, brands, neighborhoods, ad-libs, and rhyme anchors intact. Copy fully English lines unchanged. Identical hooks must use identical wording. Each English subtitle must be concise, but the sequence of adjacent English subtitles must still read as the same complete sentence or thought as the connected Korean bars.
 
 Return every requested index exactly once without merging, splitting, omitting, or reordering. `translated` must contain English only. Set `confidence` from 0 to 1. Set `needs_review=true` only when unresolved ambiguity would materially change the translation; still provide the best provisional translation and one short Korean question in `ambiguity_question`. Do not flag harmless stylistic alternatives.
 
@@ -261,7 +263,6 @@ async def _request_translation(
             "index": index,
             "text": source,
             "protected_english": extract_protected_english(source),
-            "nearby_context": _context(lyrics, index),
         }
         if current and index in current:
             item["previous_attempt"] = current[index]
@@ -274,6 +275,11 @@ async def _request_translation(
         "title": title,
         "stage": stage,
         "requested_indexes": list(indexes),
+        "ordered_song_context": [
+            {"index": i, "text": line}
+            for i, line in enumerate(lyrics)
+            if line.strip()
+        ],
         "repeated_line_groups": _repeat_groups(lyrics),
         "lines": selected,
     }

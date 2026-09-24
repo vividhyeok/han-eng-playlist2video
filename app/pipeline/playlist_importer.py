@@ -15,6 +15,7 @@ from app.config.paths import LYRICS_DIR, ensure_data_dirs
 from app.lyrics.lyric_text_utils import (
     normalize_lyric_text,
     prepare_lyric_text_for_subtitles,
+    preserve_lyric_line_breaks,
 )
 from app.pipeline.process_manager import OutputMode, ProcessConfig
 from app.sources.genie_handler import (
@@ -310,12 +311,15 @@ def prepare_manual_lyrics_track(
     output_mode: OutputMode = "video",
 ) -> PlaylistPreparedTrack:
     """Promote a skipped playlist item using lyrics supplied by the user."""
-    prepared = prepare_lyric_text_for_subtitles(normalize_lyric_text(lyrics_text))
+    prepared = preserve_lyric_line_breaks(lyrics_text)
     if not prepared.strip():
         raise ValueError("붙여 넣은 가사에 사용할 수 있는 줄이 없습니다.")
     artist = source_track.artist or "Unknown artist"
     title = source_track.title or "Unknown title"
-    lrc_path = _save_lyrics_file(artist=artist, title=title, lyrics_text=prepared)
+    lrc_path = _save_lyrics_file(
+        artist=artist, title=title, lyrics_text=prepared,
+        preserve_line_breaks=True,
+    )
     config = ProcessConfig(
         title=title, artist=artist,
         album_art_url=source_track.thumbnail_url,
@@ -387,7 +391,8 @@ def _score_genie_candidate(
     return score
 
 
-def _save_lyrics_file(*, artist: str, title: str, lyrics_text: str) -> str:
+def _save_lyrics_file(*, artist: str, title: str, lyrics_text: str,
+                      preserve_line_breaks: bool = False) -> str:
     ensure_data_dirs()
     os.makedirs(LYRICS_DIR, exist_ok=True)
 
@@ -400,8 +405,10 @@ def _save_lyrics_file(*, artist: str, title: str, lyrics_text: str) -> str:
 
     prepared_text = lyrics_text.strip()
     if not lyrics_are_synced(prepared_text):
-        prepared_text = prepare_lyric_text_for_subtitles(
-            normalize_lyric_text(prepared_text)
+        prepared_text = (
+            preserve_lyric_line_breaks(prepared_text)
+            if preserve_line_breaks
+            else prepare_lyric_text_for_subtitles(normalize_lyric_text(prepared_text))
         )
 
     with open(path, "w", encoding="utf-8") as lyric_file:

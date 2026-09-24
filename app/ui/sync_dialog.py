@@ -8,6 +8,11 @@ from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
     QMessageBox, QPushButton, QSlider, QTextEdit, QVBoxLayout)
 
+from app.lyrics.lyric_text_utils import (
+    preserve_lyric_line_breaks, split_long_lines_preserving_boundaries,
+    summarize_preserved_lyric_text,
+)
+
 TIMESTAMP = re.compile(r"\[(\d{1,2}):(\d{2}(?:\.\d{1,3})?)\]")
 
 class PlainLyricsDialog(QDialog):
@@ -17,10 +22,27 @@ class PlainLyricsDialog(QDialog):
         self.resize(760, 620)
         layout = QVBoxLayout(self)
         heading = QLabel(f"{artist} - {title}"); heading.setObjectName("subtitle"); layout.addWidget(heading)
-        note = QLabel("가사를 한 줄에 한 구절씩 붙여 넣으세요. 저장 후 음원을 준비하고 수동 타이밍 매핑을 시작합니다.")
+        note = QLabel("가사를 한 줄에 한 구절씩 붙여 넣으세요. 원본의 각 가사 줄은 그대로 유지하며 빈 줄만 제외합니다. 필요할 때만 아래 분할 버튼을 사용하세요.")
         note.setObjectName("hint"); note.setWordWrap(True); layout.addWidget(note)
         self.editor = QTextEdit(); self.editor.setPlaceholderText("첫 번째 가사 줄\n두 번째 가사 줄\n세 번째 가사 줄")
+        self.editor.textChanged.connect(self._update_summary)
         layout.addWidget(self.editor, stretch=1)
+        tools = QHBoxLayout()
+        self.summary = QLabel("원본 줄바꿈 유지(빈 줄 제외) · 0줄")
+        self.summary.setObjectName("hint")
+        tools.addWidget(self.summary, stretch=1)
+        self.split_button = QPushButton("✂ 긴 줄만 짧게 분할")
+        self.split_button.setObjectName("secondary")
+        self.split_button.setToolTip("원본 줄 사이 경계는 유지하고, 너무 긴 줄 내부만 읽기 좋은 단위로 나눕니다")
+        self.split_button.clicked.connect(self.smart_split)
+        tools.addWidget(self.split_button)
+        self.restore_button = QPushButton("원본 복원")
+        self.restore_button.setObjectName("secondary")
+        self.restore_button.setEnabled(False)
+        self.restore_button.clicked.connect(self.restore_before_split)
+        tools.addWidget(self.restore_button)
+        layout.addLayout(tools)
+        self.before_smart_split = ""
         actions = QHBoxLayout(); actions.addStretch()
         cancel = QPushButton("취소"); cancel.setObjectName("secondary"); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
         save = QPushButton("가사 저장 후 수동 타이밍 시작"); save.clicked.connect(self._accept_if_valid); actions.addWidget(save)
@@ -32,7 +54,30 @@ class PlainLyricsDialog(QDialog):
         self.accept()
 
     def lyrics_text(self) -> str:
-        return self.editor.toPlainText().strip()
+        return preserve_lyric_line_breaks(self.editor.toPlainText())
+
+    def smart_split(self):
+        source = self.editor.toPlainText()
+        split = split_long_lines_preserving_boundaries(source)
+        if split == preserve_lyric_line_breaks(source):
+            QMessageBox.information(self, "분할 결과", "이미 자막으로 읽기 좋은 길이입니다.")
+            return
+        self.before_smart_split = source
+        self.editor.setPlainText(split)
+        self.restore_button.setEnabled(True)
+
+    def restore_before_split(self):
+        if self.before_smart_split:
+            self.editor.setPlainText(self.before_smart_split)
+            self.before_smart_split = ""
+            self.restore_button.setEnabled(False)
+
+    def _update_summary(self):
+        summary = summarize_preserved_lyric_text(self.editor.toPlainText())
+        self.summary.setText(
+            f"원본 줄바꿈 유지(빈 줄 제외) · {summary.line_count}줄"
+            + (f" · 긴 줄 {summary.long_line_count}개" if summary.long_line_count else "")
+        )
 
 def _load_points(path: str) -> list[dict[str, float | str]]:
     points = []

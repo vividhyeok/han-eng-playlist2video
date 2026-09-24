@@ -55,6 +55,16 @@ def normalize_lyric_text(text: str) -> str:
     return "\n".join(normalized_lines)
 
 
+def preserve_lyric_line_breaks(text: str) -> str:
+    """Clean pasted lyrics without changing any non-empty source line boundary."""
+    lines: list[str] = []
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        cleaned = TIMESTAMP_PATTERN.sub("", raw_line).strip().strip("\ufeff")
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)
+
+
 def split_long_lyric_lines(text: str) -> str:
     """Split visually long lyric lines into shorter subtitle-sized lines."""
 
@@ -62,6 +72,14 @@ def split_long_lyric_lines(text: str) -> str:
     for line in normalize_lyric_text(text).splitlines():
         split_lines.extend(_split_line_recursive(line))
     return "\n".join(line for line in split_lines if line.strip())
+
+
+def split_long_lines_preserving_boundaries(text: str) -> str:
+    """Split only inside original lines; never merge content across line breaks."""
+    output: list[str] = []
+    for line in preserve_lyric_line_breaks(text).splitlines():
+        output.extend(_split_line_recursive(line))
+    return "\n".join(output)
 
 
 def prepare_lyric_text_for_subtitles(text: str) -> str:
@@ -81,6 +99,21 @@ def summarize_lyric_text(text: str) -> LyricTextSummary:
     return LyricTextSummary(
         line_count=len(lines),
         long_line_count=long_line_count,
+        max_visual_length=max(visual_lengths),
+    )
+
+
+def summarize_preserved_lyric_text(text: str) -> LyricTextSummary:
+    lines = preserve_lyric_line_breaks(text).splitlines()
+    if not lines:
+        return LyricTextSummary(0, 0, 0.0)
+    visual_lengths = [_visual_length(line) for line in lines]
+    return LyricTextSummary(
+        line_count=len(lines),
+        long_line_count=sum(
+            length > _line_limit(line)
+            for line, length in zip(lines, visual_lengths)
+        ),
         max_visual_length=max(visual_lengths),
     )
 

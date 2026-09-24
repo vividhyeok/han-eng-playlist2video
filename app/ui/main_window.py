@@ -158,7 +158,7 @@ class PlaylistPipelineWindow(QMainWindow):
 
         copy = QVBoxLayout()
         copy.setSpacing(3)
-        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.5.0")
+        eyebrow = QLabel("DESKTOP WORKBENCH  ·  v2.6.0")
         eyebrow.setObjectName("eyebrow")
         copy.addWidget(eyebrow)
 
