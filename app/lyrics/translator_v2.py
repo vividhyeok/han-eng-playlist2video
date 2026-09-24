@@ -462,6 +462,11 @@ async def parse_lrc_and_translate(
 ) -> str:
     with open(lrc_filepath, "r", encoding="utf-8") as file:
         content = file.read()
+    if not TIMESTAMP_PATTERN.search(content):
+        raise ValueError(
+            "타임코드가 없는 일반 가사는 먼저 AI 자동 싱크를 통과해야 합니다. "
+            "임의의 균등 간격으로 가사를 배치하지 않습니다."
+        )
     entries = _parse_lrc_content(content, duration=duration)
     if not entries:
         raise ValueError(f"No lyric lines could be parsed from {lrc_filepath}")

@@ -195,11 +195,11 @@ class PlaylistPipelineWindow(QMainWindow):
         form.addWidget(QLabel("가사 정책"), 1, 0)
         self.lyrics_policy_combo = QComboBox()
         self.lyrics_policy_combo.addItem(
-            "싱크 가사가 없으면 일반 가사 허용",
+            "일반 가사도 AI 자동 싱크 후 처리",
             "allow_plain",
         )
         self.lyrics_policy_combo.addItem(
-            "싱크 가사가 있는 곡만 처리",
+            "처음부터 싱크 가사가 있는 곡만 처리",
             "require_synced",
         )
         self.lyrics_policy_combo.currentIndexChanged.connect(self._persist_playlist_settings)
@@ -465,7 +465,7 @@ class PlaylistPipelineWindow(QMainWindow):
                     f"Playlist: {report.playlist_title}",
                     f"Queued: {len(self.queue_items)}",
                     f"Synced lyrics: {synced_count}",
-                    f"Plain lyrics: {plain_count}",
+                    f"AI 자동 싱크 예정: {plain_count}",
                     f"Skipped: {self.skipped_list.count()}",
                 ]
             ),
@@ -729,7 +729,7 @@ class PlaylistPipelineWindow(QMainWindow):
         self._refresh_pipeline_state()
 
     def _format_queue_text(self, queue_item: QueueItem) -> str:
-        lyrics_label = "싱크 가사" if queue_item.lyrics_mode == "synced" else "일반 가사"
+        lyrics_label = "싱크 가사 확인됨" if queue_item.lyrics_mode == "synced" else "AI 자동 싱크 예정"
         return f"{queue_item.label}\n{lyrics_label}"
 
     def _capture_worker_result(self, output_path: str) -> None:
