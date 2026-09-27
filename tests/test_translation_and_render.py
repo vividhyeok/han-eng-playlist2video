@@ -23,6 +23,7 @@ from app.ui.translation_dialog import (
     apply_manual_translations, build_external_review_prompt,
     parse_external_translation_json,
 )
+from app.ui.sync_dialog import _merge_lyric_points
 from app.pipeline.process_manager import ProcessConfig, ProcessManager
 from app.sources.genie_handler import lyrics_integrity_problem, lyrics_are_usable
 from app.sources.genie_handler import get_best_lyrics
@@ -219,6 +220,16 @@ class StructuredTranslationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SubtitleLayoutTests(unittest.TestCase):
+    def test_lyric_edits_keep_timing_for_unchanged_lines(self):
+        old_points = [
+            {"time": 1.2, "text": "first", "assigned": True},
+            {"time": 3.4, "text": "second", "assigned": True},
+            {"time": 5.6, "text": "third", "assigned": True},
+        ]
+        merged = _merge_lyric_points(old_points, ["first", "inserted", "second", "third"])
+        self.assertEqual([point["time"] for point in merged], [1.2, 0.0, 3.4, 5.6])
+        self.assertEqual([point["assigned"] for point in merged], [True, False, True, True])
+
     def test_manual_lyrics_preserve_original_line_boundaries(self):
         source = "첫 줄 / 슬래시도 원문\n둘째 줄 그대로"
         self.assertEqual(preserve_lyric_line_breaks(source), source)

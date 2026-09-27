@@ -195,13 +195,6 @@ def download_youtube_audio(url: str, output_name: str) -> Optional[str]:
                 "fragment_retries": 5,
                 "extractor_retries": 3,
                 "socket_timeout": 30,
-                "http_headers": {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/123.0 Safari/537.36"
-                    )
-                },
             }
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([normalized_url])

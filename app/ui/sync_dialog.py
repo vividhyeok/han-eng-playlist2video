@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from PyQt6.QtCore import QTimer, QUrl, Qt
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -97,6 +98,20 @@ def _format_time(seconds: float) -> str:
     seconds = max(0.0, seconds)
     return f"{int(seconds // 60):02d}:{seconds % 60:05.2f}"
 
+
+def _merge_lyric_points(old_points: list[dict], lines: list[str]) -> list[dict]:
+    """Keep timing for unchanged lines when lyrics are inserted or removed."""
+    old_lines = [str(point.get("text", "")) for point in old_points]
+    merged = [{"time": 0.0, "text": text, "assigned": False} for text in lines]
+    matcher = SequenceMatcher(None, old_lines, lines, autojunk=False)
+    for old_start, new_start, size in matcher.get_matching_blocks():
+        for offset in range(size):
+            merged[new_start + offset] = {
+                **old_points[old_start + offset],
+                "text": lines[new_start + offset],
+            }
+    return merged
+
 class ManualSyncDialog(QDialog):
     def __init__(self, *, audio_path: str, lrc_path: str, low_indexes: tuple[int, ...] = (), parent=None):
         super().__init__(parent)
@@ -116,10 +131,10 @@ class ManualSyncDialog(QDialog):
         self.player.setSource(QUrl.fromLocalFile(audio_path))
 
         root = QVBoxLayout(self)
-        title = QLabel("음악을 재생하고 각 가사가 시작되는 순간 ‘현재 줄 기록’을 누르세요.")
+        title = QLabel("Ctrl+Space로 재생한 뒤, 가사가 시작될 때마다 Space만 누르세요.")
         title.setObjectName("subtitle")
         root.addWidget(title)
-        help_text = QLabel("Space 기록 · Ctrl+Space 재생/일시정지 · ↑/↓ 줄 이동 · ←/→ 0.1초 보정 · Shift+←/→ 5초 이동 · Backspace 실행 취소 · Enter 선택 타임으로 이동")
+        help_text = QLabel("Space 기록·자동 다음 줄 · ↑/↓ 줄 이동 · ←/→ 0.1초 보정 · Shift+←/→ 5초 이동 · Backspace 실행 취소 · Enter 선택 타임으로 이동")
         help_text.setObjectName("hint")
         help_text.setWordWrap(True)
         root.addWidget(help_text)
@@ -153,6 +168,21 @@ class ManualSyncDialog(QDialog):
         timing_heading = QLabel("2. 재생하면서 각 줄의 시작 시간 기록")
         timing_heading.setObjectName("subtitle")
         root.addWidget(timing_heading)
+
+        self.mapping_status = QLabel("")
+        self.mapping_status.setObjectName("hint")
+        root.addWidget(self.mapping_status)
+        self.current_line_label = QLabel("현재 줄")
+        self.current_line_label.setWordWrap(True)
+        self.current_line_label.setStyleSheet(
+            "font-size: 20px; font-weight: 700; padding: 12px; "
+            "background: #243047; border-radius: 8px;"
+        )
+        root.addWidget(self.current_line_label)
+        self.next_line_label = QLabel("")
+        self.next_line_label.setObjectName("hint")
+        self.next_line_label.setWordWrap(True)
+        root.addWidget(self.next_line_label)
 
         self.position_label = QLabel("00:00.00 / 00:00.00")
         root.addWidget(self.position_label)
@@ -191,7 +221,7 @@ class ManualSyncDialog(QDialog):
         root.addWidget(self.lines, stretch=1)
         actions = QHBoxLayout(); actions.addStretch()
         cancel = QPushButton("취소"); cancel.setObjectName("secondary"); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
-        save = QPushButton("타이밍 저장 후 현재 곡 계속"); save.clicked.connect(self.save_and_accept); actions.addWidget(save)
+        save = QPushButton("타이밍 저장 완료"); save.clicked.connect(self.save_and_accept); actions.addWidget(save)
         root.addLayout(actions)
 
         self.player.durationChanged.connect(lambda duration: self.seek.setRange(0, max(0, duration)))
@@ -249,14 +279,7 @@ class ManualSyncDialog(QDialog):
         if not lines:
             QMessageBox.warning(self, "가사 확인", "가사를 한 줄 이상 붙여 넣으세요.")
             return False
-        old_points = self.points
-        new_points = []
-        for index, text in enumerate(lines):
-            if index < len(old_points) and str(old_points[index].get("text", "")) == text:
-                new_points.append(dict(old_points[index]))
-            else:
-                new_points.append({"time": 0.0, "text": text, "assigned": False})
-        self.points = new_points
+        self.points = _merge_lyric_points(self.points, lines)
         self.current_index = min(self.current_index, len(self.points) - 1)
         self.history.clear()
         self._applied_lyrics_text = prepared
@@ -274,7 +297,9 @@ class ManualSyncDialog(QDialog):
 
     def tap_current(self):
         if not self.points: return
-        self._remember(); self.points[self.current_index]["time"] = self.player.position() / 1000.0
+        value = self.player.position() / 1000.0
+        if self._reject_out_of_order_time(value): return
+        self._remember(); self.points[self.current_index]["time"] = value
         self.points[self.current_index]["assigned"] = True
         if self.current_index < len(self.points) - 1: self.current_index += 1
         self._refresh_lines()
@@ -292,11 +317,28 @@ class ManualSyncDialog(QDialog):
 
     def nudge_current(self, delta: float):
         if self.points:
-            self._remember(); self.points[self.current_index]["time"] = max(0.0, float(self.points[self.current_index]["time"]) + delta); self.points[self.current_index]["assigned"] = True; self._refresh_lines()
+            value = max(0.0, float(self.points[self.current_index]["time"]) + delta)
+            if self._reject_out_of_order_time(value): return
+            self._remember(); self.points[self.current_index]["time"] = value; self.points[self.current_index]["assigned"] = True; self._refresh_lines()
 
     def apply_time_editor(self):
         if self.points:
-            self._remember(); self.points[self.current_index]["time"] = self.time_editor.value(); self.points[self.current_index]["assigned"] = True; self._refresh_lines()
+            value = self.time_editor.value()
+            if self._reject_out_of_order_time(value): return
+            self._remember(); self.points[self.current_index]["time"] = value; self.points[self.current_index]["assigned"] = True; self._refresh_lines()
+
+    def _reject_out_of_order_time(self, value: float) -> bool:
+        previous = self.points[self.current_index - 1] if self.current_index > 0 else None
+        following = self.points[self.current_index + 1] if self.current_index + 1 < len(self.points) else None
+        if previous and previous.get("assigned") and value < float(previous["time"]):
+            self.mapping_status.setText("⚠ 기록하지 않음 · 이전 줄보다 빠른 시간입니다.")
+            QApplication.beep()
+            return True
+        if following and following.get("assigned") and value > float(following["time"]):
+            self.mapping_status.setText("⚠ 기록하지 않음 · 다음 줄보다 늦은 시간입니다.")
+            QApplication.beep()
+            return True
+        return False
 
     def undo_previous(self):
         if self.history:
@@ -310,6 +352,22 @@ class ManualSyncDialog(QDialog):
             self.lines.addItem(f"{marker}  {_format_time(float(point['time']))}    {point['text']}{warning}")
         if self.points:
             self.lines.setCurrentRow(self.current_index); self.lines.scrollToItem(self.lines.currentItem()); self.time_editor.setValue(float(self.points[self.current_index]["time"]))
+            assigned = sum(bool(point.get("assigned")) for point in self.points)
+            self.mapping_status.setText(
+                f"{assigned}/{len(self.points)}줄 기록 · 현재 {self.current_index + 1}번째 줄"
+            )
+            self.current_line_label.setText(
+                f"현재  {self.current_index + 1}.  {self.points[self.current_index]['text']}"
+            )
+            next_index = self.current_index + 1
+            self.next_line_label.setText(
+                f"다음  {next_index + 1}.  {self.points[next_index]['text']}"
+                if next_index < len(self.points) else "마지막 줄입니다."
+            )
+        else:
+            self.mapping_status.setText("기록할 가사 줄이 없습니다.")
+            self.current_line_label.setText("현재 줄 없음")
+            self.next_line_label.clear()
         self.lines.blockSignals(False)
 
     def _position_changed(self, position: int):

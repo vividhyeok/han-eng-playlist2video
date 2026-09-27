@@ -10,4 +10,4 @@ python-dotenv>=1.0.0
 requests>=2.32.0
 uvicorn>=0.30.0
 youtube-search-python>=1.6.2
-yt-dlp>=2025.1.15
+yt-dlp>=2026.8.19
