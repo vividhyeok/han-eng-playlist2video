@@ -244,6 +244,29 @@ class SubtitleLayoutTests(unittest.TestCase):
         wrapped = _wrap_subtitle("긴 가사가 화면 밖으로 나가지 않도록 안전하게 두 줄로 나뉘어야 합니다", korean=True)
         self.assertLessEqual(len(wrapped.splitlines()), 2)
 
+    def test_medium_mixed_subtitle_stays_on_one_line(self):
+        wrapped = _wrap_subtitle("I'm in that business, 친구 link it", korean=True)
+        self.assertNotIn("\n", wrapped)
+
+    def test_medium_english_subtitle_stays_on_one_line(self):
+        examples = [
+            "Hard times can't shake this body that survived alcohol dependence.",
+            "with my own feet, I did fucked-up things with fucked-up people.",
+            "Even after this moment passes, I'll tell myself again:",
+        ]
+        for text in examples:
+            with self.subTest(text=text):
+                self.assertNotIn("\n", _wrap_subtitle(text, korean=False))
+
+    def test_very_long_subtitle_wraps_to_exactly_two_lines(self):
+        text = " ".join(["extraordinarily long subtitle content"] * 12)
+        wrapped = _wrap_subtitle(text, korean=False)
+        self.assertEqual(len(wrapped.splitlines()), 2)
+
+    def test_unbroken_subtitle_never_exceeds_two_lines(self):
+        wrapped = _wrap_subtitle("W" * 500, korean=False)
+        self.assertLessEqual(len(wrapped.splitlines()), 2)
+
     def test_equal_timestamps_are_merged(self):
         grouped = _group_simultaneous_lyrics([
             {"start_time": 1, "original": "첫 줄", "english": "First"},

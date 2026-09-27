@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import textwrap
 from typing import List, Optional, Sequence
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -20,6 +19,7 @@ FRAME_SIZE = (1920, 1080)
 ART_SIZE = 500
 ART_TOP = 170
 _ENCODERS: Optional[set[str]] = None
+SUBTITLE_WIDTH = 1650
 
 
 def get_audio_duration(audio_path: str) -> float:
@@ -134,32 +134,42 @@ def _ass_escape(text: str) -> str:
     )
 
 
-def _font_override(text: str, base_size: int, *, korean: bool) -> str:
-    length = max((len(line) for line in text.split(r"\N")), default=0)
+def _subtitle_font_size(text: str, base_size: int, *, korean: bool) -> int:
+    lines = text.replace("\n", r"\N").split(r"\N")
+    length = max((len(line) for line in lines), default=0)
     if korean:
         size = base_size if length <= 30 else 54 if length <= 45 else 48 if length <= 62 else 42
     else:
         size = base_size if length <= 60 else 50 if length <= 82 else 46 if length <= 110 else 40
+    draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+    candidates = [base_size, 54, 48, 42] if korean else [base_size, 50, 46, 40]
+    for candidate in candidates:
+        if candidate <= size and all(
+            _text_width(draw, line, _load_font(candidate)) <= SUBTITLE_WIDTH
+            for line in lines
+        ):
+            return candidate
+    return candidates[-1]
+
+
+def _font_override(text: str, base_size: int, *, korean: bool) -> str:
+    size = _subtitle_font_size(text, base_size, korean=korean)
     return f"{{\\fs{size}}}"
 
 
 def _wrap_subtitle(text: str, *, korean: bool, max_lines: int = 2) -> str:
-    """Wrap ASS text predictably without adding per-frame rendering work."""
+    """Wrap ASS text by rendered width, matching the fallback renderer."""
     clean = " ".join(str(text or "").replace("\r", " ").replace("\n", " ").split())
     if not clean:
         return ""
-    width = 30 if korean else 52
-    lines = textwrap.wrap(
-        clean,
-        width=width,
-        break_long_words=True,
-        break_on_hyphens=False,
-        replace_whitespace=True,
-    )
+    base_size = 60 if korean else 55
+    font = _load_font(_subtitle_font_size(clean, base_size, korean=korean))
+    draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+    lines = _wrap(draw, clean, font, SUBTITLE_WIDTH)
     if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        remainder = clean[len(" ".join(lines[:-1])):].strip() if max_lines > 1 else clean
-        lines[-1] = textwrap.shorten(remainder, width=width, placeholder="…")
+        kept = lines[:max_lines - 1]
+        remainder = " ".join(lines[max_lines - 1:])
+        lines = kept + [_truncate_to_width(draw, remainder, font, SUBTITLE_WIDTH)]
     return "\n".join(lines)
 
 
@@ -283,6 +293,18 @@ def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont)
         return float(box[2] - box[0])
 
 
+def _truncate_to_width(
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width: float,
+) -> str:
+    if _text_width(draw, text, font) <= width:
+        return text
+    suffix = "..."
+    shortened = text
+    while shortened and _text_width(draw, shortened.rstrip() + suffix, font) > width:
+        shortened = shortened[:-1]
+    return shortened.rstrip() + suffix
+
+
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width: float) -> List[str]:
     words = str(text or "").split()
     if not words:
@@ -296,6 +318,13 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width
         else:
             if current:
                 lines.append(current)
+                current = ""
+            while word and _text_width(draw, word, font) > width:
+                split_at = len(word) - 1
+                while split_at > 1 and _text_width(draw, word[:split_at], font) > width:
+                    split_at -= 1
+                lines.append(word[:split_at])
+                word = word[split_at:]
             current = word
     if current:
         lines.append(current)
@@ -326,7 +355,6 @@ def _render_fallback(audio_path: str, base: Image.Image, lyrics: List[dict], out
             os.remove(path)
     base_path = os.path.join(frames_dir, "base.png")
     base.convert("RGB").save(base_path, optimize=True)
-    original_font, english_font = _load_font(60), _load_font(55)
     concat_path = os.path.join(frames_dir, "concat.txt")
     entries: List[str] = []
     current = 0.0
@@ -342,11 +370,15 @@ def _render_fallback(audio_path: str, base: Image.Image, lyrics: List[dict], out
         original = str(lyric.get("original", ""))
         english = str(lyric.get("english", ""))
         same_line = original.casefold().strip() == english.casefold().strip()
-        original_lines = _wrap(draw, original, original_font, 1650)[:2]
+        wrapped_original = _wrap_subtitle(original, korean=True)
+        original_font = _load_font(_subtitle_font_size(wrapped_original, 60, korean=True))
+        original_lines = wrapped_original.splitlines() or [""]
         _draw_centered_block(draw, original_lines, original_font, 750 if same_line else 730)
         if english and not same_line:
             english_y = 835 + (len(original_lines) - 1) * 72
-            _draw_centered_block(draw, _wrap(draw, english, english_font, 1650)[:2], english_font, english_y)
+            wrapped_english = _wrap_subtitle(english, korean=False)
+            english_font = _load_font(_subtitle_font_size(wrapped_english, 55, korean=False))
+            _draw_centered_block(draw, wrapped_english.splitlines(), english_font, english_y)
         path = os.path.join(frames_dir, f"frame_{index:04d}.jpg")
         frame.save(path, quality=92, optimize=True)
         entries += [f"file '{path.replace(os.sep, '/')}'", f"duration {end-start:.3f}"]
